@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
+import io # Necesario para generar el Excel
 from datetime import datetime
 import uuid
 
@@ -27,6 +28,7 @@ def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
         return pd.read_csv(FILE_PEDIDOS)
     else:
+        # Estructura completa de la base de datos
         return pd.DataFrame(columns=[
             "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", 
             "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Historial_Cambios"
@@ -43,7 +45,7 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS (MODIFICADO CON "TODOS") ---
+# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     grados = inventario['Grado'].unique()
     seleccion_final = []
@@ -52,14 +54,11 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     for grado in grados:
         df_grado = inventario[inventario['Grado'] == grado]
         
-        # MODIFICACIÓN 1: Nombre limpio solo el Grado (ej: "PRIMERO")
+        # Nombre limpio solo el Grado
         with st.expander(f"{grado}"):
-            
-            # Listas temporales para este grado
             items_grado_individuales = []
             valor_grado_individuales = 0
             
-            # Iterar libros
             for index, row in df_grado.iterrows():
                 key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}"
                 label = f"{row['Area']} - {row['Libro']} (${int(row['Precio Venta']):,})"
@@ -68,24 +67,20 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
                 if seleccion_previa and f"[{grado}] {row['Libro']}" in seleccion_previa:
                     checked = True
                 
-                # Checkbox individual
                 if st.checkbox(label, key=key_check, value=checked):
                     items_grado_individuales.append(f"[{grado}] {row['Libro']}")
                     valor_grado_individuales += row['Precio Venta']
             
-            # MODIFICACIÓN 2: Separador y Opción TODOS
-            st.divider() # Leve separador visual
+            st.divider() # Separador visual
             
-            # Lógica para pre-seleccionar "TODOS" si antes se había guardado así (opcional, por ahora manual)
+            # Opción TODOS
             check_todos = st.checkbox(f"Seleccionar TODOS los de {grado}", key=f"all_{grado}_{key_suffix}")
             
             if check_todos:
-                # Si marca TODOS, ignoramos la selección individual y sumamos todo el grado
                 for index, row in df_grado.iterrows():
                     seleccion_final.append(f"[{grado}] {row['Libro']}")
                     total_final += row['Precio Venta']
             else:
-                # Si NO marca todos, sumamos lo que haya marcado individualmente
                 seleccion_final.extend(items_grado_individuales)
                 total_final += valor_grado_individuales
 
@@ -119,7 +114,6 @@ def vista_cliente(pedido_id=None):
         celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
 
         st.divider()
-        # Aquí también aplica el cambio de "Seleccionar Pedido" implícitamente por el componente
         st.subheader("Seleccionar Pedido:") 
         items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
         
@@ -127,15 +121,21 @@ def vista_cliente(pedido_id=None):
         st.metric("Total a Pagar", f"${total:,.0f}")
         
         st.subheader("Pago")
-        tipo = st.radio("Método:", ["Pago Total", "Abono Parcial", "Pago Contraentrega"], horizontal=True)
+        # MODIFICACIÓN: Eliminada opción Contraentrega
+        tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"], horizontal=True)
+        
         abono = st.number_input("Valor a transferir hoy:", min_value=0.0, step=1000.0, value=float(datos_previos.get('Abonado', 0)))
-        archivo = st.file_uploader("Comprobante (Imagen)", type=['jpg','png','jpeg','pdf'])
+        archivo = st.file_uploader("Comprobante (Imagen/PDF)", type=['jpg','png','jpeg','pdf'])
 
         if st.form_submit_button("✅ ENVIAR PEDIDO"):
             if not nombre or not celular:
                 st.error("Falta Nombre o Celular")
             elif total == 0:
                 st.error("Seleccione libros")
+            elif abono == 0:
+                 st.error("Por favor ingrese el valor del abono o pago.")
+            elif not archivo and not es_modificacion:
+                 st.error("Por favor adjunte el comprobante de pago.")
             else:
                 df = cargar_pedidos()
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -235,7 +235,6 @@ def vista_admin():
                     m_nombre = mc1.text_input("Nombre Cliente")
                     m_celular = mc2.text_input("Celular")
                     
-                    # MODIFICACIÓN 3: Cambio de nombre del label
                     st.write("**Seleccionar Pedido:**")
                     m_items, m_total = componente_seleccion_libros(inventario, "adm")
                     
@@ -268,8 +267,23 @@ def vista_admin():
 
         st.divider()
 
-        # C) LISTADO DE PEDIDOS
-        st.subheader("📋 Listado de Pedidos")
+        # C) LISTADO DE PEDIDOS Y EXPORTACIÓN
+        col_title, col_btn = st.columns([3, 1])
+        with col_title:
+            st.subheader("📋 Listado de Pedidos")
+        with col_btn:
+            # BOTÓN DE DESCARGA EXCEL (NUEVO)
+            if not df_pedidos.empty:
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    df_pedidos.to_excel(writer, index=False, sheet_name='BaseDatos_Pedidos')
+                
+                st.download_button(
+                    label="📥 Descargar Excel",
+                    data=buffer,
+                    file_name="Reporte_Pedidos.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
         
         if not df_pedidos.empty:
             filtro = st.text_input("🔍 Buscar Pedido (Nombre/Celular):")
