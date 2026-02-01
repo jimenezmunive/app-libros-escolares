@@ -4,7 +4,7 @@ import os
 import io
 import shutil
 import unicodedata
-import re # Importante para leer el paréntesis del Área
+import re
 from datetime import datetime
 import uuid
 
@@ -22,9 +22,15 @@ if not os.path.exists(DIR_COMPROBANTES):
 if 'reset_manual' not in st.session_state:
     st.session_state.reset_manual = 0
 
+# Variables para manejar el flujo de éxito del cliente
+if 'exito_cliente' not in st.session_state:
+    st.session_state.exito_cliente = False
+if 'ultimo_pedido_cliente' not in st.session_state:
+    st.session_state.ultimo_pedido_cliente = None
+
 # --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
-    """Normaliza texto para búsquedas (Legacy)"""
+    """Normaliza texto para búsquedas"""
     if not isinstance(texto, str): texto = str(texto)
     texto = texto.strip().lower()
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
@@ -90,14 +96,13 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
-# --- FUNCIÓN GENERADOR EXCEL MATRIZ (OPCIÓN 1: LÓGICA POR ÁREA EXPLÍCITA) ---
+# --- GENERADOR EXCEL MATRIZ ---
 def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     output = io.BytesIO()
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
     workbook = writer.book
     worksheet = workbook.add_worksheet("Listado Matriz")
     
-    # Estilos
     fmt_header_grado = workbook.add_format({'bold': True, 'font_size': 14, 'bg_color': '#DDEBF7', 'border': 1})
     fmt_col_header = workbook.add_format({'bold': True, 'bg_color': '#FFF2CC', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
     fmt_cell = workbook.add_format({'border': 1, 'align': 'center'})
@@ -112,9 +117,7 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
         
-        # Mapa Legacy (solo por si acaso)
         mapa_libro_area_legacy = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
-        
         areas_unicas = inv_grado['Area'].unique()
         patron_grado = f"[{grado}]"
         
@@ -138,20 +141,14 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             for item in items:
                 if patron_grado in item:
                     area_encontrada = None
-                    
-                    # --- ESTRATEGIA 1: BUSCAR ÁREA EN EL TEXTO ---
-                    # Buscamos algo entre paréntesis, ej: "(MATEMATICAS)"
                     match = re.search(r'\((.*?)\)', item)
                     if match:
                         posible_area = match.group(1).strip()
-                        # Verificar contra las áreas válidas del grado (case insensitive)
                         for a in areas_unicas:
                             if str(a).strip().lower() == posible_area.lower():
                                 area_encontrada = a
                                 break
                     
-                    # --- ESTRATEGIA 2: LEGACY (FALLBACK) ---
-                    # Si es un pedido viejo sin paréntesis, usamos el mapa
                     if not area_encontrada:
                         nombre_raw = item.replace(patron_grado, "").strip()
                         key_clean = normalizar_clave(nombre_raw)
@@ -166,7 +163,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         if not data_rows: continue
 
-        # Escritura Excel
         worksheet.merge_range(current_row, 0, current_row, 4 + len(areas_unicas), f"GRADO: {grado}", fmt_header_grado)
         current_row += 1
         
@@ -214,7 +210,7 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     writer.close()
     return output
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS (OPCIÓN 1: GUARDAR ÁREA) ---
+# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, reset_counter=0):
     grados = inventario['Grado'].unique()
     seleccion_final = []
@@ -231,10 +227,8 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 area_libro = str(row['Area']).strip()
                 label = f"{area_libro} - {nombre_libro} (${int(row['Precio Venta']):,})"
                 
-                # --- NUEVO FORMATO DE GUARDADO: [GRADO] (AREA) LIBRO ---
+                # FORMATO NUEVO CON ÁREA GUARDADA
                 item_guardado = f"[{grado}] ({area_libro}) {nombre_libro}"
-                
-                # Formato viejo para compatibilidad al editar
                 item_viejo = f"[{grado}] {nombre_libro}"
                 
                 checked = False
@@ -243,7 +237,7 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                         checked = True
                 
                 if st.checkbox(label, key=key_check, value=checked):
-                    seleccion_final.append(item_guardado) # Guardamos el nuevo formato
+                    seleccion_final.append(item_guardado)
                     total_final += row['Precio Venta']
             
     return seleccion_final, total_final
@@ -256,8 +250,78 @@ def limpiar_formulario_manual():
     st.session_state.man_est = "Nuevo"
     st.session_state.reset_manual += 1
 
-# --- VISTA 1: CLIENTE ---
-def vista_cliente(pedido_id=None):
+# --- VISTA DE ÉXITO (CONFIRMACIÓN PEDIDO) ---
+def vista_exito_cliente(pedido_id):
+    st.balloons() # Lluvia de globos al cargar esta vista
+    st.success("¡Gracias! Tu pedido ha sido confirmado exitosamente.")
+    
+    df_pedidos = cargar_pedidos()
+    inventario = cargar_inventario()
+    pedido = df_pedidos[df_pedidos['ID_Pedido'] == pedido_id]
+    
+    if not pedido.empty:
+        fila = pedido.iloc[0]
+        
+        # Tarjeta de Resumen
+        st.write("### 🧾 Resumen de tu Pedido")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Cliente", fila['Cliente'])
+        c2.metric("Total Pedido", f"${fila['Total']:,.0f}")
+        c3.metric("Saldo Pendiente", f"${fila['Saldo']:,.0f}", delta_color="inverse")
+        
+        st.divider()
+        st.write("##### Detalle de Libros Seleccionados")
+        
+        # Lógica para mostrar MATRIZ VISUAL DE SOLO LECTURA
+        detalles = fila['Detalle']
+        
+        # 1. Identificar Grado (extraer del primer ítem)
+        match_grado = re.search(r'\[(.*?)\]', detalles)
+        if match_grado:
+            grado_detectado = match_grado.group(1)
+            
+            # Filtrar inventario de ese grado para obtener columnas
+            inv_grado = inventario[inventario['Grado'] == grado_detectado]
+            if not inv_grado.empty:
+                areas = inv_grado['Area'].unique()
+                
+                # Crear DataFrame de una sola fila
+                data_matrix = {area: ["❌"] for area in areas}
+                
+                # Llenar con Checks
+                items = detalles.split(" | ")
+                for item in items:
+                     # Buscar area en el item (Estrategia Opción 1)
+                    area_encontrada = None
+                    match_area = re.search(r'\((.*?)\)', item)
+                    if match_area:
+                        posible_area = match_area.group(1).strip()
+                        # Match flexible
+                        for a in areas:
+                            if str(a).strip().lower() == posible_area.lower():
+                                area_encontrada = a
+                                break
+                    
+                    if area_encontrada:
+                        data_matrix[area_encontrada] = ["✅"]
+                
+                # Mostrar Tabla
+                df_viz = pd.DataFrame(data_matrix)
+                st.table(df_viz)
+            else:
+                st.info(detalles) # Fallback texto simple
+        else:
+            st.info(detalles) # Fallback texto simple
+
+    st.divider()
+    if st.button("⬅️ Realizar otro pedido"):
+        # Resetear estados
+        st.session_state.exito_cliente = False
+        st.session_state.ultimo_pedido_cliente = None
+        st.rerun()
+
+# --- VISTA 1: FORMULARIO CLIENTE ---
+def vista_cliente_form(pedido_id=None):
     st.image("https://cdn-icons-png.flaticon.com/512/2232/2232688.png", width=60)
     st.title("📚 Gestión de Pedido Escolar")
     
@@ -350,7 +414,9 @@ def vista_cliente(pedido_id=None):
                     df.at[idx, 'Saldo'] = saldo
                     if archivo2: df.at[idx, 'Comprobante2'] = nombre_arch2
                     df.at[idx, 'Historial_Cambios'] += f" | Modif: {fecha}"
-                    st.success("✅ Pedido Actualizado Correctamente")
+                    st.session_state.exito_cliente = True # Activar vista éxito
+                    st.session_state.ultimo_pedido_cliente = id_actual
+                    st.rerun()
                 else:
                     nuevo = {
                         "ID_Pedido": id_actual, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
@@ -359,10 +425,11 @@ def vista_cliente(pedido_id=None):
                         "Comprobante": nombre_arch1, "Comprobante2": "No", "Historial_Cambios": "Original"
                     }
                     df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-                    st.success(f"✅ Pedido Creado! ID: {id_actual}")
-                    st.balloons()
+                    st.session_state.exito_cliente = True # Activar vista éxito
+                    st.session_state.ultimo_pedido_cliente = id_actual
                 
                 guardar_pedido_db(df)
+                st.rerun()
 
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
@@ -534,7 +601,6 @@ def vista_admin():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
                                 if patron in item:
-                                    # LÓGICA DE VISUALIZACIÓN EN APP (Igual que en Excel: Busca paréntesis)
                                     area_encontrada = None
                                     match = re.search(r'\((.*?)\)', item)
                                     if match:
@@ -544,7 +610,6 @@ def vista_admin():
                                                 area_encontrada = a
                                                 break
                                     
-                                    # Fallback Legacy
                                     if not area_encontrada:
                                         nombre_raw = item.replace(patron, "").strip()
                                         key_clean = normalizar_clave(nombre_raw)
@@ -634,6 +699,10 @@ def vista_admin():
 # --- ROUTER ---
 params = st.query_params
 if params.get("rol") == "cliente":
-    vista_cliente(params.get("pedido_id"))
+    # CONTROL DE FLUJO: SI HAY ÉXITO, MOSTRAR VISTA DE CONFIRMACIÓN
+    if st.session_state.exito_cliente and st.session_state.ultimo_pedido_cliente:
+        vista_exito_cliente(st.session_state.ultimo_pedido_cliente)
+    else:
+        vista_cliente_form(params.get("pedido_id"))
 else:
     vista_admin()
