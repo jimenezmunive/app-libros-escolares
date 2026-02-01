@@ -17,11 +17,14 @@ DIR_COMPROBANTES = 'comprobantes'
 if not os.path.exists(DIR_COMPROBANTES):
     os.makedirs(DIR_COMPROBANTES)
 
+# --- INICIALIZAR ESTADO DE SESIÓN (Para Limpiar Formularios) ---
+if 'reset_manual' not in st.session_state:
+    st.session_state.reset_manual = 0  # Contador para reiniciar checkboxes
+
 # --- FUNCIONES DE CARGA Y GUARDADO ---
 def cargar_inventario():
     if os.path.exists(FILE_INVENTARIO):
         df = pd.read_csv(FILE_INVENTARIO)
-        # Limpieza estricta de nombres
         cols_texto = ['Grado', 'Area', 'Libro']
         for col in cols_texto:
             if col in df.columns:
@@ -35,7 +38,6 @@ def guardar_inventario(df):
     for col in cols_texto:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
-    
     for col in ['Costo', 'Precio Venta']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     df['Ganancia'] = df['Precio Venta'] - df['Costo']
@@ -44,12 +46,10 @@ def guardar_inventario(df):
 def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
         df = pd.read_csv(FILE_PEDIDOS)
-        # Asegurar que existan las columnas nuevas si el archivo es viejo
         if "Comprobante2" not in df.columns:
             df["Comprobante2"] = "No"
         return df
     else:
-        # Estructura base con Comprobante2
         return pd.DataFrame(columns=[
             "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", 
             "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2", "Historial_Cambios"
@@ -59,19 +59,18 @@ def guardar_pedido_db(df):
     df.to_csv(FILE_PEDIDOS, index=False)
 
 def guardar_archivo_soporte(uploaded_file, id_pedido, sufijo=""):
-    """Guarda la imagen y retorna el nombre. Sufijo sirve para diferenciar soporte 1 del 2"""
     if uploaded_file is None:
-        return None
-    
-    file_ext = uploaded_file.name.split('.')[-1]
-    # Nombre único: ID_Pedido + _2.jpg (si es el segundo)
-    nombre_final = f"{id_pedido}{sufijo}.{file_ext}"
-    ruta_completa = os.path.join(DIR_COMPROBANTES, nombre_final)
-    
-    with open(ruta_completa, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-        
-    return nombre_final
+        return "No"
+    try:
+        file_ext = uploaded_file.name.split('.')[-1]
+        nombre_final = f"{id_pedido}{sufijo}.{file_ext}"
+        ruta_completa = os.path.join(DIR_COMPROBANTES, nombre_final)
+        with open(ruta_completa, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return nombre_final
+    except Exception as e:
+        st.error(f"Error guardando imagen: {e}")
+        return "Error"
 
 # --- FUNCIÓN GENERAR LINK WHATSAPP ---
 def generar_link_whatsapp(celular, mensaje):
@@ -88,7 +87,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     workbook = writer.book
     worksheet = workbook.add_worksheet("Listado Matriz")
     
-    # Formatos
     fmt_header_grado = workbook.add_format({'bold': True, 'font_size': 14, 'bg_color': '#DDEBF7', 'border': 1})
     fmt_col_header = workbook.add_format({'bold': True, 'bg_color': '#FFF2CC', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
     fmt_cell = workbook.add_format({'border': 1, 'align': 'center'})
@@ -103,7 +101,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
         
-        # Mapa normalizado
         mapa_libro_area = {str(k).strip().lower(): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
         areas_unicas = inv_grado['Area'].unique()
         
@@ -114,11 +111,10 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         data_rows = []
         for idx, pedido in pedidos_grado.iterrows():
-            # AQUÍ AGREGAMOS LA COLUMNA TOTAL PEDIDO
             row_dict = {
                 'Cliente': pedido['Cliente'],
                 'Celular': pedido['Celular'],
-                'Total Pedido': pedido['Total'], # Nueva Columna
+                'Total Pedido': pedido['Total'],
                 'Saldo': pedido['Saldo']
             }
             for area in areas_unicas: row_dict[area] = 0
@@ -140,11 +136,9 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         if not data_rows: continue
 
-        # Titulo Grado (ajustado ancho merge)
         worksheet.merge_range(current_row, 0, current_row, 4 + len(areas_unicas), f"GRADO: {grado}", fmt_header_grado)
         current_row += 1
         
-        # Encabezados (Agregado Total Pedido)
         headers = ['Cliente', 'Celular', 'Total Pedido', 'Saldo'] + list(areas_unicas) + ['Total Libros']
         for col_num, header in enumerate(headers):
             worksheet.write(current_row, col_num, header, fmt_col_header)
@@ -160,7 +154,7 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         for row_data in data_rows:
             worksheet.write(current_row, 0, row_data['Cliente'], fmt_cell_text)
             worksheet.write(current_row, 1, row_data['Celular'], fmt_cell)
-            worksheet.write(current_row, 2, row_data['Total Pedido'], fmt_money) # Nueva
+            worksheet.write(current_row, 2, row_data['Total Pedido'], fmt_money)
             worksheet.write(current_row, 3, row_data['Saldo'], fmt_money)
             
             col_idx = 4
@@ -174,7 +168,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             totales_verticales['Total Libros'] += row_data['Total Libros']
             current_row += 1
             
-        # Totales
         worksheet.write(current_row, 0, "TOTALES GRADO", fmt_total_row)
         worksheet.write(current_row, 1, "", fmt_total_row)
         worksheet.write(current_row, 2, "", fmt_total_row)
@@ -190,8 +183,8 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     writer.close()
     return output
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS (SIN OPCIÓN "TODOS") ---
-def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
+# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
+def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, reset_counter=0):
     grados = inventario['Grado'].unique()
     seleccion_final = []
     total_final = 0
@@ -201,7 +194,9 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
         
         with st.expander(f"{grado}"):
             for index, row in df_grado.iterrows():
-                key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}"
+                # EL SECRET KEY: incluye reset_counter para poder limpiar los checks
+                key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}_{reset_counter}"
+                
                 nombre_libro = str(row['Libro']).strip()
                 label = f"{row['Area']} - {nombre_libro} (${int(row['Precio Venta']):,})"
                 
@@ -215,9 +210,17 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
                     seleccion_final.append(f"[{grado}] {nombre_libro}")
                     total_final += row['Precio Venta']
             
-            # SE ELIMINÓ LA OPCIÓN "SELECCIONAR TODOS" AQUÍ
-            
     return seleccion_final, total_final
+
+# --- FUNCIONES DE LIMPIEZA MANUAL ---
+def limpiar_formulario_manual():
+    # Reiniciar campos de texto
+    st.session_state.man_nom = ""
+    st.session_state.man_cel = ""
+    st.session_state.man_abo = 0.0
+    st.session_state.man_est = "Nuevo"
+    # Incrementar contador para regenerar checkboxes vacíos
+    st.session_state.reset_manual += 1
 
 # --- VISTA 1: CLIENTE ---
 def vista_cliente(pedido_id=None):
@@ -241,7 +244,6 @@ def vista_cliente(pedido_id=None):
             st.info(f"📝 Estás editando el pedido ID: {datos_previos['ID_Pedido']}")
             st.write("Puedes modificar los libros seleccionados y cargar un nuevo soporte de pago si es necesario.")
 
-    # Datos Personales
     c1, c2 = st.columns(2)
     nombre = c1.text_input("Nombre Completo", value=datos_previos.get('Cliente', ''))
     celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
@@ -253,7 +255,6 @@ def vista_cliente(pedido_id=None):
     
     st.divider()
     
-    # Total
     col_metrica, col_btn_update = st.columns([2,1])
     col_metrica.metric("Total a Pagar", f"${total:,.0f}")
     col_btn_update.write("")
@@ -262,21 +263,20 @@ def vista_cliente(pedido_id=None):
     
     st.subheader("Pagos y Soportes")
     
-    # Lógica de Pagos
     tipo = st.radio("Método de Pago:", ["Pago Total", "Abono Parcial"], horizontal=True)
     
     val_abono_anterior = float(datos_previos.get('Abonado', 0))
-    st.write(f"**Abonado anteriormente:** ${val_abono_anterior:,.0f}")
+    if es_modificacion:
+        st.write(f"**Abonado anteriormente:** ${val_abono_anterior:,.0f}")
     
     nuevo_abono = st.number_input("Valor a transferir HOY (se sumará al anterior):", min_value=0.0, step=1000.0)
     
-    # Carga de Soportes
     if es_modificacion:
         st.write("---")
-        st.markdown("**📂 Cargar Segundo Soporte de Pago (Opcional)**")
-        st.caption("Usa esta opción si estás haciendo un nuevo abono o cancelando el saldo.")
+        st.markdown("**📂 Cargar Segundo Soporte (Opcional)**")
+        st.caption("Usa esta opción para registrar nuevos pagos.")
         archivo2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'], key="up_soporte_2")
-        archivo1 = None # No pedimos el 1 de nuevo si ya existe
+        archivo1 = None 
     else:
         st.write("---")
         st.markdown("**📂 Cargar Soporte de Pago**")
@@ -286,59 +286,53 @@ def vista_cliente(pedido_id=None):
     st.write("---")
     
     if st.button("✅ CONFIRMAR Y GUARDAR PEDIDO"):
-        if not nombre or not celular:
-            st.error("⚠️ Falta Nombre o Celular")
-        elif total == 0:
-            st.error("⚠️ Seleccione al menos un libro")
-        elif (not es_modificacion) and (nuevo_abono == 0):
-                st.error("⚠️ Ingrese el valor del abono.")
-        elif (not es_modificacion) and (not archivo1):
-                st.error("⚠️ Debe subir el comprobante de pago.")
-        else:
-            df = cargar_pedidos()
-            fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Si es modificación, el abono total es lo que había + lo de hoy
-            abono_total = val_abono_anterior + nuevo_abono if es_modificacion else nuevo_abono
-            saldo = total - abono_total
-            
-            id_actual = pedido_id if es_modificacion else str(uuid.uuid4())[:8]
-            
-            # Guardado de Archivos
-            nombre_arch1 = datos_previos.get('Comprobante', 'No')
-            nombre_arch2 = datos_previos.get('Comprobante2', 'No')
-            
-            if archivo1:
-                nombre_arch1 = guardar_archivo_soporte(archivo1, id_actual)
-            
-            if archivo2:
-                # El segundo soporte lleva sufijo _2
-                nombre_arch2 = guardar_archivo_soporte(archivo2, id_actual, "_2")
-
-            if es_modificacion:
-                idx = df[df['ID_Pedido'] == pedido_id].index[0]
-                df.at[idx, 'Ultima_Modificacion'] = fecha
-                df.at[idx, 'Detalle'] = " | ".join(items)
-                df.at[idx, 'Total'] = total
-                df.at[idx, 'Abonado'] = abono_total
-                df.at[idx, 'Saldo'] = saldo
-                # Actualizamos nombres de archivos si cambiaron
-                if archivo2: df.at[idx, 'Comprobante2'] = nombre_arch2
-                
-                df.at[idx, 'Historial_Cambios'] += f" | Modif: {fecha}"
-                st.success("✅ Pedido Actualizado Correctamente")
+        with st.spinner("Guardando pedido y archivos..."):
+            if not nombre or not celular:
+                st.error("⚠️ Falta Nombre o Celular")
+            elif total == 0:
+                st.error("⚠️ Seleccione al menos un libro")
+            elif (not es_modificacion) and (nuevo_abono == 0):
+                    st.error("⚠️ Ingrese el valor del abono.")
+            elif (not es_modificacion) and (not archivo1):
+                    st.error("⚠️ Debe subir el comprobante de pago.")
             else:
-                nuevo = {
-                    "ID_Pedido": id_actual, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
-                    "Cliente": nombre, "Celular": celular, "Detalle": " | ".join(items),
-                    "Total": total, "Abonado": abono_total, "Saldo": saldo, "Estado": "Nuevo",
-                    "Comprobante": nombre_arch1, "Comprobante2": "No", "Historial_Cambios": "Original"
-                }
-                df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-                st.success(f"✅ Pedido Creado! ID: {id_actual}")
-                st.balloons()
-            
-            guardar_pedido_db(df)
+                df = cargar_pedidos()
+                fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                abono_total = val_abono_anterior + nuevo_abono if es_modificacion else nuevo_abono
+                saldo = total - abono_total
+                id_actual = pedido_id if es_modificacion else str(uuid.uuid4())[:8]
+                
+                # Guardar Archivos
+                nombre_arch1 = datos_previos.get('Comprobante', 'No')
+                nombre_arch2 = datos_previos.get('Comprobante2', 'No')
+                
+                if archivo1:
+                    nombre_arch1 = guardar_archivo_soporte(archivo1, id_actual)
+                if archivo2:
+                    nombre_arch2 = guardar_archivo_soporte(archivo2, id_actual, "_2")
+
+                if es_modificacion:
+                    idx = df[df['ID_Pedido'] == pedido_id].index[0]
+                    df.at[idx, 'Ultima_Modificacion'] = fecha
+                    df.at[idx, 'Detalle'] = " | ".join(items)
+                    df.at[idx, 'Total'] = total
+                    df.at[idx, 'Abonado'] = abono_total
+                    df.at[idx, 'Saldo'] = saldo
+                    if archivo2: df.at[idx, 'Comprobante2'] = nombre_arch2
+                    df.at[idx, 'Historial_Cambios'] += f" | Modif: {fecha}"
+                    st.success("✅ Pedido Actualizado Correctamente")
+                else:
+                    nuevo = {
+                        "ID_Pedido": id_actual, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
+                        "Cliente": nombre, "Celular": celular, "Detalle": " | ".join(items),
+                        "Total": total, "Abonado": abono_total, "Saldo": saldo, "Estado": "Nuevo",
+                        "Comprobante": nombre_arch1, "Comprobante2": "No", "Historial_Cambios": "Original"
+                    }
+                    df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
+                    st.success(f"✅ Pedido Creado! ID: {id_actual}")
+                    st.balloons()
+                
+                guardar_pedido_db(df)
 
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
@@ -379,7 +373,6 @@ def vista_admin():
         st.title("📊 Panel de Ventas")
         df_pedidos = cargar_pedidos()
 
-        # A) HERRAMIENTAS WHATSAPP
         st.container(border=True)
         c1, c2 = st.columns(2)
         with c1:
@@ -398,20 +391,34 @@ def vista_admin():
 
         st.divider()
 
-        # B) INGRESO MANUAL
+        # B) INGRESO MANUAL (MEJORADO CON RESET)
         with st.expander("➕ Registrar Nuevo Pedido Manualmente", expanded=False):
             st.markdown("##### Ingreso Manual")
+            # BOTÓN DE LIMPIEZA ARRIBA A LA DERECHA
+            col_tit_man, col_btn_clear = st.columns([4, 1])
+            with col_btn_clear:
+                if st.button("🗑️ Limpiar", type="primary"):
+                    limpiar_formulario_manual()
+                    st.rerun()
+
             inventario = cargar_inventario()
             
             if inventario.empty:
                 st.warning("⚠️ No hay inventario cargado.")
             else:
                 mc1, mc2 = st.columns(2)
-                m_nombre = mc1.text_input("Nombre Cliente", key="m_nom")
-                m_celular = mc2.text_input("Celular", key="m_cel")
+                # Usamos st.session_state para poder limpiar los valores
+                if 'man_nom' not in st.session_state: st.session_state.man_nom = ""
+                if 'man_cel' not in st.session_state: st.session_state.man_cel = ""
+                if 'man_abo' not in st.session_state: st.session_state.man_abo = 0.0
+                if 'man_est' not in st.session_state: st.session_state.man_est = "Nuevo"
+
+                m_nombre = mc1.text_input("Nombre Cliente", key="man_nom")
+                m_celular = mc2.text_input("Celular", key="man_cel")
                 
                 st.write("**Seleccionar Libros:**")
-                m_items, m_total = componente_seleccion_libros(inventario, "adm")
+                # Pasamos el reset_manual como suffix para regenerar checks al limpiar
+                m_items, m_total = componente_seleccion_libros(inventario, "adm", reset_counter=st.session_state.reset_manual)
                 
                 st.write("---")
                 col_tot, col_abo = st.columns(2)
@@ -419,8 +426,8 @@ def vista_admin():
                 
                 if col_tot.button("🔄 Calcular Total"): pass
 
-                m_abono = col_abo.number_input("Abono Recibido ($):", min_value=0.0, step=1000.0, key="m_abo")
-                m_estado = st.selectbox("Estado del Pedido:", ["Nuevo", "Pagado Total", "Entregado Inmediato"], key="m_est")
+                m_abono = col_abo.number_input("Abono Recibido ($):", min_value=0.0, step=1000.0, key="man_abo")
+                m_estado = st.selectbox("Estado del Pedido:", ["Nuevo", "Pagado Total", "Entregado Inmediato"], key="man_est")
 
                 if st.button("💾 GUARDAR PEDIDO MANUAL", key="btn_save_man"):
                     if not m_nombre:
@@ -440,6 +447,8 @@ def vista_admin():
                         df_pedidos = pd.concat([df_pedidos, df_new], ignore_index=True)
                         guardar_pedido_db(df_pedidos)
                         st.success(f"✅ Pedido guardado exitosamente!")
+                        # LIMPIEZA AUTOMÁTICA
+                        limpiar_formulario_manual()
                         st.rerun()
 
         st.divider()
@@ -508,7 +517,6 @@ def vista_admin():
                                     if area_match:
                                         df_grado_view.at[idx, area_match] = True
                         
-                        # Agregamos 'Total' antes de 'Saldo'
                         cols_to_show = ["ID_Pedido", "Cliente", "Estado", "Total", "Saldo"] + list(areas)
                         column_cfg = {
                             "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"], required=True),
@@ -519,7 +527,7 @@ def vista_admin():
                         edited_matrix = st.data_editor(
                             df_grado_view[cols_to_show],
                             column_config=column_cfg,
-                            disabled=["ID_Pedido", "Cliente", "Total"] + list(areas), # Total no es editable aqui
+                            disabled=["ID_Pedido", "Cliente", "Total"] + list(areas),
                             hide_index=True,
                             use_container_width=True
                         )
@@ -543,16 +551,12 @@ def vista_admin():
                 id_sel = p_sel.split(" - ")[0]
                 fila = df_pedidos[df_pedidos['ID_Pedido'] == id_sel].iloc[0]
                 
-                # SE ELIMINÓ EL st.info (Recuadro Azul) que mostraba los detalles aquí
-                
-                # --- BOTÓN REENVIAR LINK ---
                 link_edit = f"{url_app}?rol=cliente&pedido_id={id_sel}"
                 msg_edit = f"Hola {fila['Cliente']}, aquí puedes ver y actualizar tu pedido: {link_edit}"
                 st.link_button("📲 Reenviar Link WhatsApp", generar_link_whatsapp(fila['Celular'], msg_edit))
                 
                 st.write("---")
                 
-                # Visualización de Soportes
                 col_sop1, col_sop2, col_del = st.columns(3)
                 
                 with col_sop1:
@@ -581,7 +585,6 @@ def vista_admin():
                     if st.button("🗑️ BORRAR", type="primary", disabled=not confirmar_borrado):
                         df_pedidos = df_pedidos[df_pedidos['ID_Pedido'] != id_sel]
                         guardar_pedido_db(df_pedidos)
-                        # Borrar archivos físicos
                         for arch in [arch1, arch2]:
                             if arch and arch not in ["No", "Manual/Presencial"]:
                                 p = os.path.join(DIR_COMPROBANTES, arch)
