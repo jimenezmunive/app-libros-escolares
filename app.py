@@ -15,11 +15,9 @@ def cargar_inventario():
     if os.path.exists(FILE_INVENTARIO):
         return pd.read_csv(FILE_INVENTARIO)
     else:
-        # Estructura base
         return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta", "Ganancia"])
 
 def guardar_inventario(df):
-    # Asegurar que sean números y recalcular ganancia
     for col in ['Costo', 'Precio Venta']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     df['Ganancia'] = df['Precio Venta'] - df['Costo']
@@ -45,7 +43,7 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS (Reutilizable) ---
+# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     grados = inventario['Grado'].unique()
     seleccion = []
@@ -58,7 +56,6 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
                 key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}"
                 label = f"{row['Area']} - {row['Libro']} (${int(row['Precio Venta']):,})"
                 
-                # Verificar si estaba seleccionado antes (para edición)
                 checked = False
                 if seleccion_previa and f"[{grado}] {row['Libro']}" in seleccion_previa:
                     checked = True
@@ -79,7 +76,6 @@ def vista_cliente(pedido_id=None):
         st.error("El sistema no tiene libros cargados.")
         return
 
-    # Lógica de Edición
     datos_previos = {}
     es_modificacion = False
     
@@ -143,19 +139,19 @@ def vista_cliente(pedido_id=None):
 
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
-    # --- CONFIGURACIÓN DE URL EN BARRA LATERAL (SOLUCIÓN DEFINITIVA) ---
-    st.sidebar.header("⚙️ Configuración")
-    url_app = st.sidebar.text_input("Pega aquí el LINK de tu App Publicada:", 
+    # --- URL DE LA APP (CONFIG BARRA LATERAL) ---
+    st.sidebar.header("⚙️ Configuración Link")
+    url_app = st.sidebar.text_input("LINK App Publicada:", 
                                     value="https://tu-app.streamlit.app", 
-                                    help="Sin esto, los enlaces de WhatsApp no funcionarán.")
+                                    help="Pega aquí el link de internet de tu app.")
     
-    menu = st.sidebar.radio("Menú Admin:", ["📊 Gestión de Pedidos", "➕ Ingreso Manual de Pedido", "📦 Inventario"])
+    # --- MENÚ PRINCIPAL ---
+    menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
 
-    # ---------------- 1. INVENTARIO ----------------
-    if menu == "📦 Inventario":
+    # ---------------- SECCIÓN 1: INVENTARIO ----------------
+    if menu == "📦 Inventario de Libros":
         st.title("📦 Inventario de Libros")
         
-        # Carga Excel
         with st.expander("Subir Excel Masivo"):
             up = st.file_uploader("Excel (Grado, Area, Libro, Costo, Precio Venta)", type=['xlsx','csv'])
             if up:
@@ -165,7 +161,6 @@ def vista_admin():
                     st.success("Cargado!")
                 except: st.error("Error en archivo")
         
-        # Editor
         df = cargar_inventario()
         if not df.empty:
             df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
@@ -173,62 +168,17 @@ def vista_admin():
                 guardar_inventario(df_ed)
                 st.rerun()
             
-            # Totales
             st.write("---")
             st.subheader("Resumen Financiero por Grado")
             resumen = df.groupby("Grado")[["Costo", "Precio Venta", "Ganancia"]].sum().reset_index()
             st.dataframe(resumen, use_container_width=True)
 
-    # ---------------- 2. INGRESO MANUAL (RECUPERADO) ----------------
-    elif menu == "➕ Ingreso Manual de Pedido":
-        st.title("➕ Crear Pedido Manualmente")
-        st.caption("Usa esta opción para registrar ventas telefónicas o presenciales (tu digitas por el cliente).")
-        
-        inventario = cargar_inventario()
-        if inventario.empty:
-            st.warning("Primero carga el inventario.")
-        else:
-            with st.form("form_manual_admin"):
-                col1, col2 = st.columns(2)
-                nombre = col1.text_input("Nombre Cliente")
-                celular = col2.text_input("Celular")
-                
-                st.write("---")
-                st.write("**Selecciona los libros:**")
-                items, total = componente_seleccion_libros(inventario, "adm")
-                
-                st.write("---")
-                c_tot, c_abo = st.columns(2)
-                c_tot.metric("Total Pedido", f"${total:,.0f}")
-                abono = c_abo.number_input("Abono Recibido ($):", min_value=0.0, step=1000.0)
-                
-                estado_inicial = st.selectbox("Estado Inicial:", ["Nuevo", "Pagado Total", "Entregado Inmediato"])
-
-                if st.form_submit_button("💾 GUARDAR PEDIDO"):
-                    if not nombre:
-                        st.error("Falta el nombre.")
-                    elif total == 0:
-                        st.error("No seleccionaste libros.")
-                    else:
-                        df = cargar_pedidos()
-                        fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        nuevo_id = str(uuid.uuid4())[:8]
-                        nuevo = {
-                            "ID_Pedido": nuevo_id, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
-                            "Cliente": nombre, "Celular": celular, "Detalle": " | ".join(items),
-                            "Total": total, "Abonado": abono, "Saldo": total - abono, "Estado": estado_inicial,
-                            "Comprobante": "Presencial/Manual", "Historial_Cambios": "Creado por Admin"
-                        }
-                        df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-                        guardar_pedido_db(df)
-                        st.success(f"Pedido guardado con ID: {nuevo_id}")
-
-    # ---------------- 3. GESTIÓN PEDIDOS ----------------
-    elif menu == "📊 Gestión de Pedidos":
+    # ---------------- SECCIÓN 2: PANEL DE VENTAS (TODO AQUÍ) ----------------
+    elif menu == "📊 Panel de Ventas":
         st.title("📊 Panel de Ventas")
-        df = cargar_pedidos()
-        
-        # --- GENERADOR DE LINK (SOLUCIONADO) ---
+        df_pedidos = cargar_pedidos()
+
+        # A) HERRAMIENTAS WHATSAPP
         st.container(border=True)
         c1, c2 = st.columns(2)
         with c1:
@@ -236,29 +186,77 @@ def vista_admin():
             tel = st.text_input("Celular Cliente:", key="tel_wa")
             if tel:
                 if "tu-app" in url_app or "localhost" in url_app:
-                    st.warning("⚠️ ¡OJO! Pega el link real de tu app en el menú de la izquierda para que esto funcione bien.")
-                
+                    st.warning("⚠️ Recuerda pegar el LINK REAL en el menú izquierdo.")
                 link_ped = f"{url_app}?rol=cliente"
                 msg = f"Hola, haz tu pedido aquí: {link_ped}"
                 link_wa = generar_link_whatsapp(tel, msg)
                 st.link_button("Enviar Mensaje", link_wa)
-        
         with c2:
-            st.subheader("🔗 Copiar Link Genérico")
+            st.subheader("🔗 Copiar Link General")
             st.code(f"{url_app}?rol=cliente", language="text")
-            st.caption("Copia esto para grupos o redes sociales.")
 
-        st.write("---")
-        st.subheader("Listado de Pedidos")
+        st.divider()
+
+        # B) INGRESO MANUAL (INTEGRADO AQUÍ)
+        # Usamos un expander para que no ocupe espacio si no se usa
+        with st.expander("➕ Registrar Nuevo Pedido Manualmente (Presencial / Telefónico)", expanded=False):
+            st.markdown("##### Formulario de Ingreso Manual")
+            inventario = cargar_inventario()
+            
+            if inventario.empty:
+                st.warning("⚠️ No hay inventario cargado.")
+            else:
+                with st.form("form_manual_admin"):
+                    mc1, mc2 = st.columns(2)
+                    m_nombre = mc1.text_input("Nombre Cliente")
+                    m_celular = mc2.text_input("Celular")
+                    
+                    st.write("**Seleccionar Libros:**")
+                    # Usamos una clave unica 'adm' para diferenciar
+                    m_items, m_total = componente_seleccion_libros(inventario, "adm")
+                    
+                    st.write("---")
+                    col_tot, col_abo = st.columns(2)
+                    col_tot.metric("Total Pedido", f"${m_total:,.0f}")
+                    m_abono = col_abo.number_input("Abono Recibido ($):", min_value=0.0, step=1000.0)
+                    
+                    m_estado = st.selectbox("Estado del Pedido:", ["Nuevo", "Pagado Total", "Entregado Inmediato"])
+
+                    if st.form_submit_button("💾 GUARDAR PEDIDO MANUAL"):
+                        if not m_nombre:
+                            st.error("Falta Nombre")
+                        elif m_total == 0:
+                            st.error("Faltan Libros")
+                        else:
+                            fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            nuevo_id = str(uuid.uuid4())[:8]
+                            nuevo_p = {
+                                "ID_Pedido": nuevo_id, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
+                                "Cliente": m_nombre, "Celular": m_celular, "Detalle": " | ".join(m_items),
+                                "Total": m_total, "Abonado": m_abono, "Saldo": m_total - m_abono, "Estado": m_estado,
+                                "Comprobante": "Manual/Presencial", "Historial_Cambios": "Creado por Admin (Manual)"
+                            }
+                            df_new = pd.DataFrame([nuevo_p])
+                            df_pedidos = pd.concat([df_pedidos, df_new], ignore_index=True)
+                            guardar_pedido_db(df_pedidos)
+                            st.success(f"✅ Pedido guardado exitosamente!")
+                            st.rerun() # Recarga la pagina para ver el pedido en la tabla abajo
+
+        st.divider()
+
+        # C) LISTADO DE PEDIDOS
+        st.subheader("📋 Listado de Pedidos")
         
-        if not df.empty:
-            filtro = st.text_input("Buscar Cliente:")
+        if not df_pedidos.empty:
+            filtro = st.text_input("🔍 Buscar Pedido (Nombre/Celular):")
             if filtro:
-                df = df[df['Cliente'].str.contains(filtro, case=False, na=False)]
+                df_view = df_pedidos[df_pedidos['Cliente'].str.contains(filtro, case=False, na=False)]
+            else:
+                df_view = df_pedidos
 
             # Tabla Editable
             edited = st.data_editor(
-                df,
+                df_view,
                 column_config={
                     "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"], required=True),
                     "Total": st.column_config.NumberColumn(format="$%d"),
@@ -267,29 +265,30 @@ def vista_admin():
                 disabled=["ID_Pedido", "Detalle"],
                 hide_index=True
             )
-            if st.button("Actualizar Cambios"):
-                guardar_pedido_db(edited)
-                st.success("Guardado")
-                st.rerun()
-
-            # Gestión Individual
+            if st.button("💾 Actualizar Estados en Tabla"):
+                # Actualizar DF original
+                df_pedidos.update(edited)
+                guardar_pedido_db(df_pedidos)
+                st.success("Cambios guardados.")
+            
+            # Gestión Individual (Reenvío)
             st.write("---")
-            st.write("**Gestión Detallada (Editar / Reenviar):**")
-            p_sel = st.selectbox("Seleccionar:", df['ID_Pedido'] + " - " + df['Cliente'])
+            st.caption("Herramientas de Edición:")
+            p_sel = st.selectbox("Seleccionar Pedido para Editar/Reenviar:", df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente'])
             if p_sel:
                 id_sel = p_sel.split(" - ")[0]
-                fila = df[df['ID_Pedido'] == id_sel].iloc[0]
+                fila = df_pedidos[df_pedidos['ID_Pedido'] == id_sel].iloc[0]
                 
                 c_a, c_b = st.columns(2)
                 with c_a:
                     st.info(f"Libros: {fila['Detalle']}")
+                    st.write(f"**Saldo:** ${fila['Saldo']:,}")
                 with c_b:
                     link_edit = f"{url_app}?rol=cliente&pedido_id={id_sel}"
-                    msg_edit = f"Hola {fila['Cliente']}, corrige tu pedido aquí: {link_edit}"
-                    st.link_button("Reenviar Link de Edición", generar_link_whatsapp(fila['Celular'], msg_edit))
-
+                    msg_edit = f"Hola {fila['Cliente']}, aquí puedes corregir o ver tu pedido: {link_edit}"
+                    st.link_button("📲 Reenviar Link de Edición (WhatsApp)", generar_link_whatsapp(fila['Celular'], msg_edit))
         else:
-            st.info("Sin pedidos.")
+            st.info("No hay pedidos registrados aún.")
 
 # --- ROUTER ---
 params = st.query_params
