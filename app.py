@@ -22,7 +22,6 @@ if not os.path.exists(DIR_COMPROBANTES):
 if 'reset_manual' not in st.session_state:
     st.session_state.reset_manual = 0
 
-# Variables para manejar el flujo de éxito del cliente
 if 'exito_cliente' not in st.session_state:
     st.session_state.exito_cliente = False
 if 'ultimo_pedido_cliente' not in st.session_state:
@@ -252,7 +251,7 @@ def limpiar_formulario_manual():
 
 # --- VISTA DE ÉXITO (CONFIRMACIÓN PEDIDO) ---
 def vista_exito_cliente(pedido_id):
-    st.balloons() # Lluvia de globos al cargar esta vista
+    st.balloons() 
     st.success("¡Gracias! Tu pedido ha sido confirmado exitosamente.")
     
     df_pedidos = cargar_pedidos()
@@ -262,7 +261,6 @@ def vista_exito_cliente(pedido_id):
     if not pedido.empty:
         fila = pedido.iloc[0]
         
-        # Tarjeta de Resumen
         st.write("### 🧾 Resumen de tu Pedido")
         c1, c2, c3 = st.columns(3)
         c1.metric("Cliente", fila['Cliente'])
@@ -272,50 +270,64 @@ def vista_exito_cliente(pedido_id):
         st.divider()
         st.write("##### Detalle de Libros Seleccionados")
         
-        # Lógica para mostrar MATRIZ VISUAL DE SOLO LECTURA
+        # --- LÓGICA DE VISUALIZACIÓN POR GRADOS ---
         detalles = fila['Detalle']
+        items = detalles.split(" | ")
         
-        # 1. Identificar Grado (extraer del primer ítem)
-        match_grado = re.search(r'\[(.*?)\]', detalles)
-        if match_grado:
-            grado_detectado = match_grado.group(1)
-            
-            # Filtrar inventario de ese grado para obtener columnas
-            inv_grado = inventario[inventario['Grado'] == grado_detectado]
-            if not inv_grado.empty:
-                areas = inv_grado['Area'].unique()
+        # 1. Agrupar ítems por Grado
+        libros_por_grado = {}
+        for item in items:
+            # Buscar [GRADO]
+            match_grado = re.search(r'\[(.*?)\]', item)
+            if match_grado:
+                g = match_grado.group(1)
+                if g not in libros_por_grado: libros_por_grado[g] = []
+                libros_por_grado[g].append(item)
+        
+        if libros_por_grado:
+            # 2. Iterar por cada grado encontrado
+            for grado, lista_items in libros_por_grado.items():
+                st.markdown(f"#### 🎓 Grado: {grado}")
                 
-                # Crear DataFrame de una sola fila
-                data_matrix = {area: ["❌"] for area in areas}
+                # Filtrar inventario de este grado
+                inv_grado = inventario[inventario['Grado'] == grado]
                 
-                # Llenar con Checks
-                items = detalles.split(" | ")
-                for item in items:
-                     # Buscar area en el item (Estrategia Opción 1)
-                    area_encontrada = None
-                    match_area = re.search(r'\((.*?)\)', item)
-                    if match_area:
-                        posible_area = match_area.group(1).strip()
-                        # Match flexible
-                        for a in areas:
-                            if str(a).strip().lower() == posible_area.lower():
-                                area_encontrada = a
-                                break
+                if not inv_grado.empty:
+                    areas = inv_grado['Area'].unique()
+                    data_matrix = {area: ["❌"] for area in areas}
                     
-                    if area_encontrada:
-                        data_matrix[area_encontrada] = ["✅"]
-                
-                # Mostrar Tabla
-                df_viz = pd.DataFrame(data_matrix)
-                st.table(df_viz)
-            else:
-                st.info(detalles) # Fallback texto simple
+                    # Marcar los comprados
+                    for item in lista_items:
+                        # Buscar Area (Opción 1: Paréntesis)
+                        area_encontrada = None
+                        match_area = re.search(r'\((.*?)\)', item)
+                        if match_area:
+                            posible_area = match_area.group(1).strip()
+                            for a in areas:
+                                if str(a).strip().lower() == posible_area.lower():
+                                    area_encontrada = a
+                                    break
+                        
+                        # Fallback (Legacy)
+                        if not area_encontrada:
+                            # Intentar adivinar por nombre si es pedido viejo
+                            patron = f"[{grado}]"
+                            nombre_raw = item.replace(patron, "").strip()
+                            # Aquí no tenemos mapa fácil, mejor dejarlo si falla
+                        
+                        if area_encontrada:
+                            data_matrix[area_encontrada] = ["✅"]
+                    
+                    # Mostrar Tabla del Grado
+                    df_viz = pd.DataFrame(data_matrix)
+                    st.table(df_viz)
+                else:
+                    st.warning(f"No hay información de inventario para {grado}")
         else:
-            st.info(detalles) # Fallback texto simple
+            st.info(detalles)
 
     st.divider()
     if st.button("⬅️ Realizar otro pedido"):
-        # Resetear estados
         st.session_state.exito_cliente = False
         st.session_state.ultimo_pedido_cliente = None
         st.rerun()
@@ -414,7 +426,7 @@ def vista_cliente_form(pedido_id=None):
                     df.at[idx, 'Saldo'] = saldo
                     if archivo2: df.at[idx, 'Comprobante2'] = nombre_arch2
                     df.at[idx, 'Historial_Cambios'] += f" | Modif: {fecha}"
-                    st.session_state.exito_cliente = True # Activar vista éxito
+                    st.session_state.exito_cliente = True 
                     st.session_state.ultimo_pedido_cliente = id_actual
                     st.rerun()
                 else:
@@ -425,7 +437,7 @@ def vista_cliente_form(pedido_id=None):
                         "Comprobante": nombre_arch1, "Comprobante2": "No", "Historial_Cambios": "Original"
                     }
                     df = pd.concat([df, pd.DataFrame([nuevo])], ignore_index=True)
-                    st.session_state.exito_cliente = True # Activar vista éxito
+                    st.session_state.exito_cliente = True 
                     st.session_state.ultimo_pedido_cliente = id_actual
                 
                 guardar_pedido_db(df)
@@ -699,7 +711,6 @@ def vista_admin():
 # --- ROUTER ---
 params = st.query_params
 if params.get("rol") == "cliente":
-    # CONTROL DE FLUJO: SI HAY ÉXITO, MOSTRAR VISTA DE CONFIRMACIÓN
     if st.session_state.exito_cliente and st.session_state.ultimo_pedido_cliente:
         vista_exito_cliente(st.session_state.ultimo_pedido_cliente)
     else:
