@@ -3,7 +3,8 @@ import pandas as pd
 import os
 import io
 import shutil
-import unicodedata # Librería para eliminar tildes y normalizar
+import unicodedata
+import re # Importante para leer el paréntesis del Área
 from datetime import datetime
 import uuid
 
@@ -21,25 +22,16 @@ if not os.path.exists(DIR_COMPROBANTES):
 if 'reset_manual' not in st.session_state:
     st.session_state.reset_manual = 0
 
-# --- FUNCIÓN DE NORMALIZACIÓN (EL SECRETO PARA ARREGLAR EL ERROR) ---
+# --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
-    """
-    Convierte texto a minúsculas, quita espacios y ELIMINA TILDES/Ñ.
-    Ejemplo: 'Matemáticas' -> 'matematicas'
-    Esto asegura que la búsqueda en la matriz sea exacta.
-    """
-    if not isinstance(texto, str):
-        texto = str(texto)
-    # 1. Minúsculas y espacios
+    """Normaliza texto para búsquedas (Legacy)"""
+    if not isinstance(texto, str): texto = str(texto)
     texto = texto.strip().lower()
-    # 2. Descomponer caracteres (separar tildes de letras)
-    texto = unicodedata.normalize('NFKD', texto)
-    # 3. Quedarse solo con caracteres ASCII (elimina las tildes separadas)
-    texto = texto.encode('ASCII', 'ignore').decode('utf-8')
+    texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     return texto
 
 # --- FUNCIONES DE CARGA Y GUARDADO ---
-@st.cache_data # Cache para acelerar la app y que no se bloquee al subir fotos
+@st.cache_data
 def cargar_inventario():
     if os.path.exists(FILE_INVENTARIO):
         df = pd.read_csv(FILE_INVENTARIO)
@@ -60,7 +52,7 @@ def guardar_inventario(df):
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     df['Ganancia'] = df['Precio Venta'] - df['Costo']
     df.to_csv(FILE_INVENTARIO, index=False)
-    cargar_inventario.clear() # Limpiar cache al guardar
+    cargar_inventario.clear()
 
 def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
@@ -98,7 +90,7 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
-# --- FUNCIÓN GENERADOR EXCEL MATRIZ (CORREGIDA CON NORMALIZACIÓN) ---
+# --- FUNCIÓN GENERADOR EXCEL MATRIZ (OPCIÓN 1: LÓGICA POR ÁREA EXPLÍCITA) ---
 def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     output = io.BytesIO()
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
@@ -120,14 +112,12 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
         
-        # --- MAPEO ROBUSTO USANDO NORMALIZACIÓN ---
-        # Clave: Libro NORMALIZADO (sin tildes, minuscula) -> Valor: Area
-        mapa_libro_area = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
+        # Mapa Legacy (solo por si acaso)
+        mapa_libro_area_legacy = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
         
         areas_unicas = inv_grado['Area'].unique()
         patron_grado = f"[{grado}]"
         
-        # Filtrar pedidos
         pedidos_grado = df_pedidos[df_pedidos['Detalle'].str.contains(patron_grado, regex=False, na=False)].copy()
         
         if pedidos_grado.empty: continue
@@ -147,16 +137,28 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             
             for item in items:
                 if patron_grado in item:
-                    # 1. Quitar el prefijo [GRADO]
-                    nombre_libro_raw = item.replace(patron_grado, "").strip()
-                    # 2. Normalizar el nombre extraído igual que hicimos con el inventario
-                    nombre_libro_key = normalizar_clave(nombre_libro_raw)
+                    area_encontrada = None
                     
-                    # 3. Buscar en el mapa normalizado
-                    area_correspondiente = mapa_libro_area.get(nombre_libro_key)
+                    # --- ESTRATEGIA 1: BUSCAR ÁREA EN EL TEXTO ---
+                    # Buscamos algo entre paréntesis, ej: "(MATEMATICAS)"
+                    match = re.search(r'\((.*?)\)', item)
+                    if match:
+                        posible_area = match.group(1).strip()
+                        # Verificar contra las áreas válidas del grado (case insensitive)
+                        for a in areas_unicas:
+                            if str(a).strip().lower() == posible_area.lower():
+                                area_encontrada = a
+                                break
                     
-                    if area_correspondiente:
-                        row_dict[area_correspondiente] = 1
+                    # --- ESTRATEGIA 2: LEGACY (FALLBACK) ---
+                    # Si es un pedido viejo sin paréntesis, usamos el mapa
+                    if not area_encontrada:
+                        nombre_raw = item.replace(patron_grado, "").strip()
+                        key_clean = normalizar_clave(nombre_raw)
+                        area_encontrada = mapa_libro_area_legacy.get(key_clean)
+                    
+                    if area_encontrada:
+                        row_dict[area_encontrada] = 1
                         libros_comprados_count += 1
             
             row_dict['Total Libros'] = libros_comprados_count
@@ -164,7 +166,7 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         if not data_rows: continue
 
-        # Escribir en Excel
+        # Escritura Excel
         worksheet.merge_range(current_row, 0, current_row, 4 + len(areas_unicas), f"GRADO: {grado}", fmt_header_grado)
         current_row += 1
         
@@ -212,7 +214,7 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     writer.close()
     return output
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
+# --- COMPONENTE DE SELECCIÓN DE LIBROS (OPCIÓN 1: GUARDAR ÁREA) ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, reset_counter=0):
     grados = inventario['Grado'].unique()
     seleccion_final = []
@@ -223,20 +225,25 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
         
         with st.expander(f"{grado}"):
             for index, row in df_grado.iterrows():
-                # Checkbox único con contador de reset
                 key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}_{reset_counter}"
                 
                 nombre_libro = str(row['Libro']).strip()
-                label = f"{row['Area']} - {nombre_libro} (${int(row['Precio Venta']):,})"
+                area_libro = str(row['Area']).strip()
+                label = f"{area_libro} - {nombre_libro} (${int(row['Precio Venta']):,})"
+                
+                # --- NUEVO FORMATO DE GUARDADO: [GRADO] (AREA) LIBRO ---
+                item_guardado = f"[{grado}] ({area_libro}) {nombre_libro}"
+                
+                # Formato viejo para compatibilidad al editar
+                item_viejo = f"[{grado}] {nombre_libro}"
                 
                 checked = False
                 if seleccion_previa:
-                    item_buscado = f"[{grado}] {nombre_libro}"
-                    if item_buscado in seleccion_previa:
+                    if item_guardado in seleccion_previa or item_viejo in seleccion_previa:
                         checked = True
                 
                 if st.checkbox(label, key=key_check, value=checked):
-                    seleccion_final.append(f"[{grado}] {nombre_libro}")
+                    seleccion_final.append(item_guardado) # Guardamos el nuevo formato
                     total_final += row['Precio Venta']
             
     return seleccion_final, total_final
@@ -247,7 +254,7 @@ def limpiar_formulario_manual():
     st.session_state.man_cel = ""
     st.session_state.man_abo = 0.0
     st.session_state.man_est = "Nuevo"
-    st.session_state.reset_manual += 1 # Esto resetea los checkboxes
+    st.session_state.reset_manual += 1
 
 # --- VISTA 1: CLIENTE ---
 def vista_cliente(pedido_id=None):
@@ -275,9 +282,8 @@ def vista_cliente(pedido_id=None):
     celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
 
     st.divider()
-    st.subheader("Seleccionar Libros (Uno a Uno):") 
+    st.subheader("Seleccionar Libros:") 
     
-    # Checkboxes
     items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
     
     st.divider()
@@ -286,10 +292,9 @@ def vista_cliente(pedido_id=None):
     col_metrica.metric("Total a Pagar", f"${total:,.0f}")
     col_btn_update.write("")
     if col_btn_update.button("🔄 Actualizar Precio"):
-        pass # Recarga la app para refrescar el total
+        pass 
     
     st.subheader("Pagos y Soportes")
-    
     tipo = st.radio("Método de Pago:", ["Pago Total", "Abono Parcial"], horizontal=True)
     
     val_abono_anterior = float(datos_previos.get('Abonado', 0))
@@ -298,11 +303,9 @@ def vista_cliente(pedido_id=None):
     
     nuevo_abono = st.number_input("Valor a transferir HOY (se sumará al anterior):", min_value=0.0, step=1000.0)
     
-    # CARGA DE ARCHIVOS FUERA DE ST.FORM (Evita bloqueos)
     if es_modificacion:
         st.write("---")
         st.markdown("**📂 Cargar Segundo Soporte (Opcional)**")
-        st.caption("Usa esta opción para registrar nuevos pagos.")
         archivo2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'], key="up_soporte_2")
         archivo1 = None 
     else:
@@ -370,7 +373,6 @@ def vista_admin():
     
     menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
 
-    # ---------------- SECCIÓN 1: INVENTARIO ----------------
     if menu == "📦 Inventario de Libros":
         st.title("📦 Inventario de Libros")
         
@@ -395,7 +397,6 @@ def vista_admin():
             resumen = df.groupby("Grado")[["Costo", "Precio Venta", "Ganancia"]].sum().reset_index()
             st.dataframe(resumen, use_container_width=True)
 
-    # ---------------- SECCIÓN 2: PANEL DE VENTAS ----------------
     elif menu == "📊 Panel de Ventas":
         st.title("📊 Panel de Ventas")
         df_pedidos = cargar_pedidos()
@@ -418,11 +419,8 @@ def vista_admin():
 
         st.divider()
 
-        # B) INGRESO MANUAL CON AUTO-LIMPIEZA
         with st.expander("➕ Registrar Nuevo Pedido Manualmente", expanded=False):
             st.markdown("##### Ingreso Manual")
-            
-            # Botón Limpiar arriba a la derecha
             col_tit_man, col_btn_clear = st.columns([4, 1])
             with col_btn_clear:
                 if st.button("🗑️ Limpiar", type="primary"):
@@ -435,7 +433,6 @@ def vista_admin():
                 st.warning("⚠️ No hay inventario cargado.")
             else:
                 mc1, mc2 = st.columns(2)
-                # Inicializamos session_state si no existe
                 if 'man_nom' not in st.session_state: st.session_state.man_nom = ""
                 if 'man_cel' not in st.session_state: st.session_state.man_cel = ""
                 if 'man_abo' not in st.session_state: st.session_state.man_abo = 0.0
@@ -474,13 +471,11 @@ def vista_admin():
                         df_pedidos = pd.concat([df_pedidos, df_new], ignore_index=True)
                         guardar_pedido_db(df_pedidos)
                         st.success(f"✅ Pedido guardado exitosamente!")
-                        # AUTO LIMPIEZA
                         limpiar_formulario_manual()
                         st.rerun()
 
         st.divider()
 
-        # C) LISTADO DE PEDIDOS
         col_title, col_btn = st.columns([2, 2])
         with col_title:
             st.subheader("📋 Listado de Pedidos")
@@ -525,7 +520,6 @@ def vista_admin():
                 
                 if grado_sel:
                     inv_grado = inventario_actual[inventario_actual['Grado'] == grado_sel]
-                    # MAPA NORMALIZADO
                     mapa_libro_area = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
                     areas = inv_grado['Area'].unique()
                     
@@ -540,12 +534,24 @@ def vista_admin():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
                                 if patron in item:
-                                    nombre_clean = item.replace(patron, "").strip()
-                                    # Normalizar clave para buscar
-                                    key_clean = normalizar_clave(nombre_clean)
-                                    area_match = mapa_libro_area.get(key_clean)
-                                    if area_match:
-                                        df_grado_view.at[idx, area_match] = True
+                                    # LÓGICA DE VISUALIZACIÓN EN APP (Igual que en Excel: Busca paréntesis)
+                                    area_encontrada = None
+                                    match = re.search(r'\((.*?)\)', item)
+                                    if match:
+                                        posible_area = match.group(1).strip()
+                                        for a in areas:
+                                            if str(a).strip().lower() == posible_area.lower():
+                                                area_encontrada = a
+                                                break
+                                    
+                                    # Fallback Legacy
+                                    if not area_encontrada:
+                                        nombre_raw = item.replace(patron, "").strip()
+                                        key_clean = normalizar_clave(nombre_raw)
+                                        area_encontrada = mapa_libro_area.get(key_clean)
+                                    
+                                    if area_encontrada:
+                                        df_grado_view.at[idx, area_encontrada] = True
                         
                         cols_to_show = ["ID_Pedido", "Cliente", "Estado", "Total", "Saldo"] + list(areas)
                         column_cfg = {
