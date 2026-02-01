@@ -14,11 +14,24 @@ FILE_PEDIDOS = 'base_datos_pedidos.csv'
 # --- FUNCIONES DE CARGA Y GUARDADO ---
 def cargar_inventario():
     if os.path.exists(FILE_INVENTARIO):
-        return pd.read_csv(FILE_INVENTARIO)
+        df = pd.read_csv(FILE_INVENTARIO)
+        # LIMPIEZA AUTOMÁTICA DE ESPACIOS (SOLUCIÓN BUG EXCEL)
+        # Esto asegura que "Matemáticas " sea igual a "Matemáticas"
+        cols_texto = ['Grado', 'Area', 'Libro']
+        for col in cols_texto:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+        return df
     else:
         return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta", "Ganancia"])
 
 def guardar_inventario(df):
+    # Limpieza antes de guardar
+    cols_texto = ['Grado', 'Area', 'Libro']
+    for col in cols_texto:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip()
+            
     for col in ['Costo', 'Precio Venta']:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     df['Ganancia'] = df['Precio Venta'] - df['Costo']
@@ -60,26 +73,20 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     fmt_total_row = workbook.add_format({'bold': True, 'bg_color': '#E2EFDA', 'border': 1, 'align': 'center'})
 
     current_row = 0
-    grados_ordenados = df_inventario['Grado'].unique() # Asumimos orden de carga o alfabético
+    grados_ordenados = df_inventario['Grado'].unique()
 
     for grado in grados_ordenados:
-        # 1. Filtrar inventario de este grado
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
         
-        # Mapeo: Libro -> Area (para poner Area en el encabezado)
         mapa_libro_area = dict(zip(inv_grado['Libro'], inv_grado['Area']))
-        areas_unicas = inv_grado['Area'].unique() # Columnas de la matriz
+        areas_unicas = inv_grado['Area'].unique()
         
-        # 2. Filtrar pedidos que contengan este grado
-        # Buscamos en el string 'Detalle' si contiene "[GRADO]"
         patron_grado = f"[{grado}]"
         pedidos_grado = df_pedidos[df_pedidos['Detalle'].str.contains(patron_grado, regex=False, na=False)].copy()
         
-        if pedidos_grado.empty:
-            continue # Si no hay pedidos para este grado, saltamos
+        if pedidos_grado.empty: continue
 
-        # 3. Construir la Matriz de Datos
         data_rows = []
         for idx, pedido in pedidos_grado.iterrows():
             row_dict = {
@@ -87,20 +94,15 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
                 'Celular': pedido['Celular'],
                 'Saldo': pedido['Saldo']
             }
-            # Inicializar áreas en 0
-            for area in areas_unicas:
-                row_dict[area] = 0
+            for area in areas_unicas: row_dict[area] = 0
             
-            # Parsear Detalle
             items = str(pedido['Detalle']).split(" | ")
             libros_comprados_count = 0
             
             for item in items:
-                # item ej: "[PRIMERO] MATEMATICAS"
                 if patron_grado in item:
-                    # Extraer nombre libro: quitar "[PRIMERO] "
+                    # Al limpiar espacios aquí y en la carga, aseguramos el match
                     nombre_libro = item.replace(patron_grado, "").strip()
-                    # Buscar su area
                     area_correspondiente = mapa_libro_area.get(nombre_libro)
                     if area_correspondiente:
                         row_dict[area_correspondiente] = 1
@@ -111,59 +113,45 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         if not data_rows: continue
 
-        # 4. Escribir en Excel
-        
-        # A) Título del Grado
         worksheet.merge_range(current_row, 0, current_row, 3 + len(areas_unicas), f"GRADO: {grado}", fmt_header_grado)
         current_row += 1
         
-        # B) Encabezados de Columna
         headers = ['Cliente', 'Celular', 'Saldo'] + list(areas_unicas) + ['Total Libros']
         for col_num, header in enumerate(headers):
             worksheet.write(current_row, col_num, header, fmt_col_header)
-            # Ajustar ancho
             if header == 'Cliente': worksheet.set_column(col_num, col_num, 30)
             elif header == 'Celular': worksheet.set_column(col_num, col_num, 15)
             else: worksheet.set_column(col_num, col_num, 12)
         current_row += 1
         
-        # C) Filas de Datos
-        # Calcular totales verticales
         totales_verticales = {area: 0 for area in areas_unicas}
         totales_verticales['Total Libros'] = 0
 
         for row_data in data_rows:
-            # Cliente
             worksheet.write(current_row, 0, row_data['Cliente'], fmt_cell_text)
             worksheet.write(current_row, 1, row_data['Celular'], fmt_cell)
             worksheet.write(current_row, 2, row_data['Saldo'], fmt_money)
             
-            # Areas (1 o 0)
             col_idx = 3
             for area in areas_unicas:
                 val = row_data[area]
-                worksheet.write(current_row, col_idx, val if val > 0 else "", fmt_cell) # Dejar vacío si es 0 para limpieza visual
+                worksheet.write(current_row, col_idx, val if val > 0 else "", fmt_cell)
                 totales_verticales[area] += val
                 col_idx += 1
             
-            # Total Fila
             worksheet.write(current_row, col_idx, row_data['Total Libros'], fmt_cell)
             totales_verticales['Total Libros'] += row_data['Total Libros']
-            
             current_row += 1
             
-        # D) Fila de Totales del Grado
         worksheet.write(current_row, 0, "TOTALES GRADO", fmt_total_row)
         worksheet.write(current_row, 1, "", fmt_total_row)
         worksheet.write(current_row, 2, "", fmt_total_row)
-        
         col_idx = 3
         for area in areas_unicas:
             worksheet.write(current_row, col_idx, totales_verticales[area], fmt_total_row)
             col_idx += 1
         worksheet.write(current_row, col_idx, totales_verticales['Total Libros'], fmt_total_row)
         
-        # Espacio para el siguiente bloque
         current_row += 3 
 
     writer.close()
@@ -184,11 +172,15 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
             
             for index, row in df_grado.iterrows():
                 key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}"
+                # Formato visual
                 label = f"{row['Area']} - {row['Libro']} (${int(row['Precio Venta']):,})"
                 
                 checked = False
-                if seleccion_previa and f"[{grado}] {row['Libro']}" in seleccion_previa:
-                    checked = True
+                # Verificar selección previa. Importante: strip() para comparar
+                if seleccion_previa:
+                    item_buscado = f"[{grado}] {row['Libro']}"
+                    if item_buscado in seleccion_previa:
+                        checked = True
                 
                 if st.checkbox(label, key=key_check, value=checked):
                     items_grado_individuales.append(f"[{grado}] {row['Libro']}")
@@ -243,7 +235,6 @@ def vista_cliente(pedido_id=None):
         st.metric("Total a Pagar", f"${total:,.0f}")
         
         st.subheader("Pago")
-        # MODIFICACIÓN: SOLO 2 OPCIONES
         tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"], horizontal=True)
         
         abono = st.number_input("Valor a transferir hoy:", min_value=0.0, step=1000.0, value=float(datos_previos.get('Abonado', 0)))
@@ -305,7 +296,7 @@ def vista_admin():
                 try:
                     df_up = pd.read_csv(up) if up.name.endswith('.csv') else pd.read_excel(up)
                     guardar_inventario(df_up)
-                    st.success("Cargado!")
+                    st.success("Cargado y limpiado!")
                 except: st.error("Error en archivo")
         
         df = cargar_inventario()
@@ -345,8 +336,8 @@ def vista_admin():
         st.divider()
 
         # B) INGRESO MANUAL
-        with st.expander("➕ Registrar Nuevo Pedido Manualmente (Presencial / Telefónico)", expanded=False):
-            st.markdown("##### Formulario de Ingreso Manual")
+        with st.expander("➕ Registrar Nuevo Pedido Manualmente", expanded=False):
+            st.markdown("##### Ingreso Manual")
             inventario = cargar_inventario()
             
             if inventario.empty:
@@ -364,7 +355,6 @@ def vista_admin():
                     col_tot, col_abo = st.columns(2)
                     col_tot.metric("Total Pedido", f"${m_total:,.0f}")
                     m_abono = col_abo.number_input("Abono Recibido ($):", min_value=0.0, step=1000.0)
-                    
                     m_estado = st.selectbox("Estado del Pedido:", ["Nuevo", "Pagado Total", "Entregado Inmediato"])
 
                     if st.form_submit_button("💾 GUARDAR PEDIDO MANUAL"):
@@ -389,50 +379,109 @@ def vista_admin():
 
         st.divider()
 
-        # C) LISTADO DE PEDIDOS Y EXPORTACIÓN MATRIZ
-        col_title, col_btn = st.columns([3, 1])
+        # C) LISTADO DE PEDIDOS (CON OPCIÓN MATRIZ)
+        col_title, col_btn = st.columns([2, 2])
         with col_title:
             st.subheader("📋 Listado de Pedidos")
         with col_btn:
-            # BOTÓN DE DESCARGA EXCEL (MATRIZ / PACKING LIST)
-            if not df_pedidos.empty:
-                inventario_actual = cargar_inventario()
-                if not inventario_actual.empty:
-                    excel_bytes = generar_excel_matriz_bytes(df_pedidos, inventario_actual)
-                    
-                    st.download_button(
-                        label="📥 Descargar Reporte Matriz (Excel)",
-                        data=excel_bytes,
-                        file_name="Reporte_Pedidos_Matriz.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                else:
-                    st.warning("Carga el inventario para generar el reporte.")
+            inventario_actual = cargar_inventario()
+            if not df_pedidos.empty and not inventario_actual.empty:
+                excel_bytes = generar_excel_matriz_bytes(df_pedidos, inventario_actual)
+                st.download_button("📥 Descargar Reporte Matriz (Excel)", excel_bytes, "Reporte_Pedidos_Matriz.xlsx")
         
-        if not df_pedidos.empty:
-            filtro = st.text_input("🔍 Buscar Pedido (Nombre/Celular):")
-            if filtro:
-                df_view = df_pedidos[df_pedidos['Cliente'].str.contains(filtro, case=False, na=False)]
-            else:
-                df_view = df_pedidos
+        # --- SELECTOR DE VISTA (LISTA vs MATRIZ) ---
+        tipo_vista = st.radio("Modo de Visualización:", ["Vista General (Lista)", "Vista Detallada por Grado (Matriz)"], horizontal=True)
 
-            edited = st.data_editor(
-                df_view,
-                column_config={
-                    "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"], required=True),
-                    "Total": st.column_config.NumberColumn(format="$%d"),
-                    "Saldo": st.column_config.NumberColumn(format="$%d")
-                },
-                disabled=["ID_Pedido", "Detalle"],
-                hide_index=True
-            )
-            if st.button("💾 Actualizar Estados en Tabla"):
-                df_pedidos.update(edited)
-                guardar_pedido_db(df_pedidos)
-                st.success("Cambios guardados.")
+        if not df_pedidos.empty:
             
+            # --- VISTA 1: GENERAL (LISTA) ---
+            if tipo_vista == "Vista General (Lista)":
+                filtro = st.text_input("🔍 Buscar Pedido:")
+                df_view = df_pedidos
+                if filtro:
+                    df_view = df_pedidos[df_pedidos['Cliente'].str.contains(filtro, case=False, na=False)]
+
+                edited = st.data_editor(
+                    df_view,
+                    column_config={
+                        "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"], required=True),
+                        "Total": st.column_config.NumberColumn(format="$%d"),
+                        "Saldo": st.column_config.NumberColumn(format="$%d")
+                    },
+                    disabled=["ID_Pedido", "Detalle"],
+                    hide_index=True,
+                    use_container_width=True
+                )
+                if st.button("💾 Guardar Cambios (Vista Lista)"):
+                    df_pedidos.update(edited)
+                    guardar_pedido_db(df_pedidos)
+                    st.success("Cambios guardados.")
+            
+            # --- VISTA 2: MATRIZ POR GRADO (VISUAL) ---
+            else:
+                st.info("ℹ️ En esta vista puedes editar Estados y Saldos. Para cambiar libros específicos, usa la opción 'Editar/Reenviar' abajo.")
+                grados_disp = inventario_actual['Grado'].unique()
+                grado_sel = st.selectbox("Selecciona el Grado a visualizar:", grados_disp)
+                
+                if grado_sel:
+                    # Construir DataFrame Matriz para Visualización
+                    inv_grado = inventario_actual[inventario_actual['Grado'] == grado_sel]
+                    mapa_libro_area = dict(zip(inv_grado['Libro'], inv_grado['Area']))
+                    areas = inv_grado['Area'].unique()
+                    
+                    patron = f"[{grado_sel}]"
+                    # Filtrar pedidos del grado
+                    df_grado_view = df_pedidos[df_pedidos['Detalle'].str.contains(patron, regex=False, na=False)].copy()
+                    
+                    if not df_grado_view.empty:
+                        # Crear columnas de areas
+                        for area in areas:
+                            df_grado_view[area] = False # Inicializar checkbox
+                        
+                        # Llenar datos (Solo lectura para libros)
+                        for idx, row in df_grado_view.iterrows():
+                            items = str(row['Detalle']).split(" | ")
+                            for item in items:
+                                if patron in item:
+                                    nombre_libro = item.replace(patron, "").strip()
+                                    area_match = mapa_libro_area.get(nombre_libro)
+                                    if area_match:
+                                        df_grado_view.at[idx, area_match] = True
+                        
+                        # Configurar editor
+                        column_cfg = {
+                            "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"], required=True),
+                            "Saldo": st.column_config.NumberColumn(format="$%d"),
+                            "Total": st.column_config.NumberColumn(format="$%d"),
+                        }
+                        # Deshabilitar edición de columnas de libros (complejidad técnica) y ID
+                        disabled_cols = ["ID_Pedido", "Detalle", "Fecha_Creacion", "Cliente", "Celular"] + list(areas)
+                        
+                        # Mostrar columnas relevantes
+                        cols_to_show = ["ID_Pedido", "Cliente", "Estado", "Saldo"] + list(areas)
+                        
+                        edited_matrix = st.data_editor(
+                            df_grado_view[cols_to_show],
+                            column_config=column_cfg,
+                            disabled=disabled_cols, 
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                        
+                        if st.button("💾 Guardar Cambios (Estados/Saldos)"):
+                            # Actualizar solo las columnas editables en el DF principal
+                            for i, r in edited_matrix.iterrows():
+                                idx_orig = df_pedidos[df_pedidos['ID_Pedido'] == r['ID_Pedido']].index[0]
+                                df_pedidos.at[idx_orig, 'Estado'] = r['Estado']
+                                df_pedidos.at[idx_orig, 'Saldo'] = r['Saldo']
+                            
+                            guardar_pedido_db(df_pedidos)
+                            st.success("Cambios guardados correctamente.")
+                    else:
+                        st.warning(f"No hay pedidos registrados para {grado_sel}.")
+
             st.write("---")
-            st.caption("Herramientas de Edición:")
+            st.caption("Herramientas de Edición Avanzada:")
             p_sel = st.selectbox("Seleccionar Pedido para Editar/Reenviar:", df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente'])
             if p_sel:
                 id_sel = p_sel.split(" - ")[0]
@@ -441,7 +490,6 @@ def vista_admin():
                 c_a, c_b = st.columns(2)
                 with c_a:
                     st.info(f"Libros: {fila['Detalle']}")
-                    st.write(f"**Saldo:** ${fila['Saldo']:,}")
                 with c_b:
                     link_edit = f"{url_app}?rol=cliente&pedido_id={id_sel}"
                     msg_edit = f"Hola {fila['Cliente']}, aquí puedes corregir o ver tu pedido: {link_edit}"
