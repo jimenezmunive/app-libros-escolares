@@ -35,6 +35,20 @@ def normalizar_clave(texto):
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     return texto
 
+def obtener_nuevo_id(df_pedidos):
+    """Genera un ID consecutivo (0001, 0002...). Ignora IDs no numéricos antiguos."""
+    max_id = 0
+    if not df_pedidos.empty:
+        for pid in df_pedidos['ID_Pedido']:
+            # Verificar si es numérico
+            if str(pid).isdigit():
+                val = int(pid)
+                if val > max_id:
+                    max_id = val
+    
+    nuevo = max_id + 1
+    return f"{nuevo:04d}"
+
 # --- FUNCIONES DE CARGA Y GUARDADO ---
 @st.cache_data
 def cargar_inventario():
@@ -62,6 +76,8 @@ def guardar_inventario(df):
 def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
         df = pd.read_csv(FILE_PEDIDOS)
+        # Asegurar compatibilidad columna ID como string para evitar problemas de tipos
+        df['ID_Pedido'] = df['ID_Pedido'].astype(str)
         if "Comprobante2" not in df.columns:
             df["Comprobante2"] = "No"
         return df
@@ -256,12 +272,12 @@ def vista_exito_cliente(pedido_id):
     
     df_pedidos = cargar_pedidos()
     inventario = cargar_inventario()
-    pedido = df_pedidos[df_pedidos['ID_Pedido'] == pedido_id]
+    pedido = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)] # asegurar string
     
     if not pedido.empty:
         fila = pedido.iloc[0]
         
-        st.write("### 🧾 Resumen de tu Pedido")
+        st.write(f"### 🧾 Resumen de tu Pedido #{fila['ID_Pedido']}")
         c1, c2, c3 = st.columns(3)
         c1.metric("Cliente", fila['Cliente'])
         c2.metric("Total Pedido", f"${fila['Total']:,.0f}")
@@ -277,7 +293,6 @@ def vista_exito_cliente(pedido_id):
         # 1. Agrupar ítems por Grado
         libros_por_grado = {}
         for item in items:
-            # Buscar [GRADO]
             match_grado = re.search(r'\[(.*?)\]', item)
             if match_grado:
                 g = match_grado.group(1)
@@ -285,20 +300,15 @@ def vista_exito_cliente(pedido_id):
                 libros_por_grado[g].append(item)
         
         if libros_por_grado:
-            # 2. Iterar por cada grado encontrado
             for grado, lista_items in libros_por_grado.items():
                 st.markdown(f"#### 🎓 Grado: {grado}")
-                
-                # Filtrar inventario de este grado
                 inv_grado = inventario[inventario['Grado'] == grado]
                 
                 if not inv_grado.empty:
                     areas = inv_grado['Area'].unique()
                     data_matrix = {area: ["❌"] for area in areas}
                     
-                    # Marcar los comprados
                     for item in lista_items:
-                        # Buscar Area (Opción 1: Paréntesis)
                         area_encontrada = None
                         match_area = re.search(r'\((.*?)\)', item)
                         if match_area:
@@ -308,17 +318,13 @@ def vista_exito_cliente(pedido_id):
                                     area_encontrada = a
                                     break
                         
-                        # Fallback (Legacy)
                         if not area_encontrada:
-                            # Intentar adivinar por nombre si es pedido viejo
                             patron = f"[{grado}]"
                             nombre_raw = item.replace(patron, "").strip()
-                            # Aquí no tenemos mapa fácil, mejor dejarlo si falla
                         
                         if area_encontrada:
                             data_matrix[area_encontrada] = ["✅"]
                     
-                    # Mostrar Tabla del Grado
                     df_viz = pd.DataFrame(data_matrix)
                     st.table(df_viz)
                 else:
@@ -347,7 +353,7 @@ def vista_cliente_form(pedido_id=None):
     
     if pedido_id:
         df_pedidos = cargar_pedidos()
-        pedido_existente = df_pedidos[df_pedidos['ID_Pedido'] == pedido_id]
+        pedido_existente = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)]
         if not pedido_existente.empty:
             datos_previos = pedido_existente.iloc[0].to_dict()
             es_modificacion = True
@@ -407,7 +413,12 @@ def vista_cliente_form(pedido_id=None):
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 abono_total = val_abono_anterior + nuevo_abono if es_modificacion else nuevo_abono
                 saldo = total - abono_total
-                id_actual = pedido_id if es_modificacion else str(uuid.uuid4())[:8]
+                
+                # GENERACIÓN DE ID CONSECUTIVO O USO DE EXISTENTE
+                if es_modificacion:
+                    id_actual = str(pedido_id)
+                else:
+                    id_actual = obtener_nuevo_id(df) # Función nueva
                 
                 nombre_arch1 = datos_previos.get('Comprobante', 'No')
                 nombre_arch2 = datos_previos.get('Comprobante2', 'No')
@@ -418,7 +429,7 @@ def vista_cliente_form(pedido_id=None):
                     nombre_arch2 = guardar_archivo_soporte(archivo2, id_actual, "_2")
 
                 if es_modificacion:
-                    idx = df[df['ID_Pedido'] == pedido_id].index[0]
+                    idx = df[df['ID_Pedido'] == id_actual].index[0]
                     df.at[idx, 'Ultima_Modificacion'] = fecha
                     df.at[idx, 'Detalle'] = " | ".join(items)
                     df.at[idx, 'Total'] = total
@@ -539,7 +550,10 @@ def vista_admin():
                         st.error("Faltan Libros")
                     else:
                         fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        nuevo_id = str(uuid.uuid4())[:8]
+                        
+                        # ID CONSECUTIVO MANUAL
+                        nuevo_id = obtener_nuevo_id(df_pedidos)
+                        
                         nuevo_p = {
                             "ID_Pedido": nuevo_id, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
                             "Cliente": m_nombre, "Celular": m_celular, "Detalle": " | ".join(m_items),
@@ -549,7 +563,7 @@ def vista_admin():
                         df_new = pd.DataFrame([nuevo_p])
                         df_pedidos = pd.concat([df_pedidos, df_new], ignore_index=True)
                         guardar_pedido_db(df_pedidos)
-                        st.success(f"✅ Pedido guardado exitosamente!")
+                        st.success(f"✅ Pedido guardado exitosamente! ID: {nuevo_id}")
                         limpiar_formulario_manual()
                         st.rerun()
 
@@ -613,6 +627,7 @@ def vista_admin():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
                                 if patron in item:
+                                    # LÓGICA VISUALIZACIÓN MATRIZ APP (OPCIÓN 1)
                                     area_encontrada = None
                                     match = re.search(r'\((.*?)\)', item)
                                     if match:
@@ -658,7 +673,14 @@ def vista_admin():
             st.write("---")
             st.subheader("🛠️ Herramientas de Gestión")
             
-            p_sel = st.selectbox("Seleccionar Pedido para Gestionar:", df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente'])
+            # --- MEJORA: FILTRO PARA SELECTBOX ---
+            filtro_gestion = st.text_input("🔍 Filtrar lista de gestión (Escribe nombre o ID):", placeholder="Ej: 0005 o Juan")
+            
+            opciones = df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente']
+            if filtro_gestion:
+                opciones = opciones[opciones.str.contains(filtro_gestion, case=False, na=False)]
+            
+            p_sel = st.selectbox("Seleccionar Pedido para Gestionar:", opciones)
             
             if p_sel:
                 id_sel = p_sel.split(" - ")[0]
