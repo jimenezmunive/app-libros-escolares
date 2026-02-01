@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import os
-import io # Necesario para generar el Excel
+import io
 from datetime import datetime
 import uuid
 
@@ -28,7 +28,6 @@ def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
         return pd.read_csv(FILE_PEDIDOS)
     else:
-        # Estructura completa de la base de datos
         return pd.DataFrame(columns=[
             "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", 
             "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Historial_Cambios"
@@ -45,6 +44,131 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
+# --- FUNCIÓN GENERADOR EXCEL MATRIZ (PACKING LIST) ---
+def generar_excel_matriz_bytes(df_pedidos, df_inventario):
+    output = io.BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    workbook = writer.book
+    worksheet = workbook.add_worksheet("Listado Matriz")
+    
+    # Formatos
+    fmt_header_grado = workbook.add_format({'bold': True, 'font_size': 14, 'bg_color': '#DDEBF7', 'border': 1})
+    fmt_col_header = workbook.add_format({'bold': True, 'bg_color': '#FFF2CC', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    fmt_cell = workbook.add_format({'border': 1, 'align': 'center'})
+    fmt_cell_text = workbook.add_format({'border': 1, 'align': 'left'})
+    fmt_money = workbook.add_format({'border': 1, 'num_format': '$#,##0', 'align': 'right'})
+    fmt_total_row = workbook.add_format({'bold': True, 'bg_color': '#E2EFDA', 'border': 1, 'align': 'center'})
+
+    current_row = 0
+    grados_ordenados = df_inventario['Grado'].unique() # Asumimos orden de carga o alfabético
+
+    for grado in grados_ordenados:
+        # 1. Filtrar inventario de este grado
+        inv_grado = df_inventario[df_inventario['Grado'] == grado]
+        if inv_grado.empty: continue
+        
+        # Mapeo: Libro -> Area (para poner Area en el encabezado)
+        mapa_libro_area = dict(zip(inv_grado['Libro'], inv_grado['Area']))
+        areas_unicas = inv_grado['Area'].unique() # Columnas de la matriz
+        
+        # 2. Filtrar pedidos que contengan este grado
+        # Buscamos en el string 'Detalle' si contiene "[GRADO]"
+        patron_grado = f"[{grado}]"
+        pedidos_grado = df_pedidos[df_pedidos['Detalle'].str.contains(patron_grado, regex=False, na=False)].copy()
+        
+        if pedidos_grado.empty:
+            continue # Si no hay pedidos para este grado, saltamos
+
+        # 3. Construir la Matriz de Datos
+        data_rows = []
+        for idx, pedido in pedidos_grado.iterrows():
+            row_dict = {
+                'Cliente': pedido['Cliente'],
+                'Celular': pedido['Celular'],
+                'Saldo': pedido['Saldo']
+            }
+            # Inicializar áreas en 0
+            for area in areas_unicas:
+                row_dict[area] = 0
+            
+            # Parsear Detalle
+            items = str(pedido['Detalle']).split(" | ")
+            libros_comprados_count = 0
+            
+            for item in items:
+                # item ej: "[PRIMERO] MATEMATICAS"
+                if patron_grado in item:
+                    # Extraer nombre libro: quitar "[PRIMERO] "
+                    nombre_libro = item.replace(patron_grado, "").strip()
+                    # Buscar su area
+                    area_correspondiente = mapa_libro_area.get(nombre_libro)
+                    if area_correspondiente:
+                        row_dict[area_correspondiente] = 1
+                        libros_comprados_count += 1
+            
+            row_dict['Total Libros'] = libros_comprados_count
+            data_rows.append(row_dict)
+
+        if not data_rows: continue
+
+        # 4. Escribir en Excel
+        
+        # A) Título del Grado
+        worksheet.merge_range(current_row, 0, current_row, 3 + len(areas_unicas), f"GRADO: {grado}", fmt_header_grado)
+        current_row += 1
+        
+        # B) Encabezados de Columna
+        headers = ['Cliente', 'Celular', 'Saldo'] + list(areas_unicas) + ['Total Libros']
+        for col_num, header in enumerate(headers):
+            worksheet.write(current_row, col_num, header, fmt_col_header)
+            # Ajustar ancho
+            if header == 'Cliente': worksheet.set_column(col_num, col_num, 30)
+            elif header == 'Celular': worksheet.set_column(col_num, col_num, 15)
+            else: worksheet.set_column(col_num, col_num, 12)
+        current_row += 1
+        
+        # C) Filas de Datos
+        # Calcular totales verticales
+        totales_verticales = {area: 0 for area in areas_unicas}
+        totales_verticales['Total Libros'] = 0
+
+        for row_data in data_rows:
+            # Cliente
+            worksheet.write(current_row, 0, row_data['Cliente'], fmt_cell_text)
+            worksheet.write(current_row, 1, row_data['Celular'], fmt_cell)
+            worksheet.write(current_row, 2, row_data['Saldo'], fmt_money)
+            
+            # Areas (1 o 0)
+            col_idx = 3
+            for area in areas_unicas:
+                val = row_data[area]
+                worksheet.write(current_row, col_idx, val if val > 0 else "", fmt_cell) # Dejar vacío si es 0 para limpieza visual
+                totales_verticales[area] += val
+                col_idx += 1
+            
+            # Total Fila
+            worksheet.write(current_row, col_idx, row_data['Total Libros'], fmt_cell)
+            totales_verticales['Total Libros'] += row_data['Total Libros']
+            
+            current_row += 1
+            
+        # D) Fila de Totales del Grado
+        worksheet.write(current_row, 0, "TOTALES GRADO", fmt_total_row)
+        worksheet.write(current_row, 1, "", fmt_total_row)
+        worksheet.write(current_row, 2, "", fmt_total_row)
+        
+        col_idx = 3
+        for area in areas_unicas:
+            worksheet.write(current_row, col_idx, totales_verticales[area], fmt_total_row)
+            col_idx += 1
+        worksheet.write(current_row, col_idx, totales_verticales['Total Libros'], fmt_total_row)
+        
+        # Espacio para el siguiente bloque
+        current_row += 3 
+
+    writer.close()
+    return output
+
 # --- COMPONENTE DE SELECCIÓN DE LIBROS ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     grados = inventario['Grado'].unique()
@@ -54,7 +178,6 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     for grado in grados:
         df_grado = inventario[inventario['Grado'] == grado]
         
-        # Nombre limpio solo el Grado
         with st.expander(f"{grado}"):
             items_grado_individuales = []
             valor_grado_individuales = 0
@@ -71,9 +194,8 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
                     items_grado_individuales.append(f"[{grado}] {row['Libro']}")
                     valor_grado_individuales += row['Precio Venta']
             
-            st.divider() # Separador visual
+            st.divider() 
             
-            # Opción TODOS
             check_todos = st.checkbox(f"Seleccionar TODOS los de {grado}", key=f"all_{grado}_{key_suffix}")
             
             if check_todos:
@@ -121,7 +243,7 @@ def vista_cliente(pedido_id=None):
         st.metric("Total a Pagar", f"${total:,.0f}")
         
         st.subheader("Pago")
-        # MODIFICACIÓN: Eliminada opción Contraentrega
+        # MODIFICACIÓN: SOLO 2 OPCIONES
         tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"], horizontal=True)
         
         abono = st.number_input("Valor a transferir hoy:", min_value=0.0, step=1000.0, value=float(datos_previos.get('Abonado', 0)))
@@ -267,23 +389,25 @@ def vista_admin():
 
         st.divider()
 
-        # C) LISTADO DE PEDIDOS Y EXPORTACIÓN
+        # C) LISTADO DE PEDIDOS Y EXPORTACIÓN MATRIZ
         col_title, col_btn = st.columns([3, 1])
         with col_title:
             st.subheader("📋 Listado de Pedidos")
         with col_btn:
-            # BOTÓN DE DESCARGA EXCEL (NUEVO)
+            # BOTÓN DE DESCARGA EXCEL (MATRIZ / PACKING LIST)
             if not df_pedidos.empty:
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                    df_pedidos.to_excel(writer, index=False, sheet_name='BaseDatos_Pedidos')
-                
-                st.download_button(
-                    label="📥 Descargar Excel",
-                    data=buffer,
-                    file_name="Reporte_Pedidos.xlsx",
-                    mime="application/vnd.ms-excel"
-                )
+                inventario_actual = cargar_inventario()
+                if not inventario_actual.empty:
+                    excel_bytes = generar_excel_matriz_bytes(df_pedidos, inventario_actual)
+                    
+                    st.download_button(
+                        label="📥 Descargar Reporte Matriz (Excel)",
+                        data=excel_bytes,
+                        file_name="Reporte_Pedidos_Matriz.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.warning("Carga el inventario para generar el reporte.")
         
         if not df_pedidos.empty:
             filtro = st.text_input("🔍 Buscar Pedido (Nombre/Celular):")
