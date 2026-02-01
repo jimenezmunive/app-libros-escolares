@@ -43,15 +43,23 @@ def generar_link_whatsapp(celular, mensaje):
     texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
     return f"https://wa.me/{celular}?text={texto_codificado}"
 
-# --- COMPONENTE DE SELECCIÓN DE LIBROS ---
+# --- COMPONENTE DE SELECCIÓN DE LIBROS (MODIFICADO CON "TODOS") ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
     grados = inventario['Grado'].unique()
-    seleccion = []
-    total = 0
+    seleccion_final = []
+    total_final = 0
     
     for grado in grados:
         df_grado = inventario[inventario['Grado'] == grado]
-        with st.expander(f"📖 Libros de {grado}"):
+        
+        # MODIFICACIÓN 1: Nombre limpio solo el Grado (ej: "PRIMERO")
+        with st.expander(f"{grado}"):
+            
+            # Listas temporales para este grado
+            items_grado_individuales = []
+            valor_grado_individuales = 0
+            
+            # Iterar libros
             for index, row in df_grado.iterrows():
                 key_check = f"{grado}_{row['Area']}_{row['Libro']}_{key_suffix}"
                 label = f"{row['Area']} - {row['Libro']} (${int(row['Precio Venta']):,})"
@@ -60,10 +68,28 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None):
                 if seleccion_previa and f"[{grado}] {row['Libro']}" in seleccion_previa:
                     checked = True
                 
+                # Checkbox individual
                 if st.checkbox(label, key=key_check, value=checked):
-                    seleccion.append(f"[{grado}] {row['Libro']}")
-                    total += row['Precio Venta']
-    return seleccion, total
+                    items_grado_individuales.append(f"[{grado}] {row['Libro']}")
+                    valor_grado_individuales += row['Precio Venta']
+            
+            # MODIFICACIÓN 2: Separador y Opción TODOS
+            st.divider() # Leve separador visual
+            
+            # Lógica para pre-seleccionar "TODOS" si antes se había guardado así (opcional, por ahora manual)
+            check_todos = st.checkbox(f"Seleccionar TODOS los de {grado}", key=f"all_{grado}_{key_suffix}")
+            
+            if check_todos:
+                # Si marca TODOS, ignoramos la selección individual y sumamos todo el grado
+                for index, row in df_grado.iterrows():
+                    seleccion_final.append(f"[{grado}] {row['Libro']}")
+                    total_final += row['Precio Venta']
+            else:
+                # Si NO marca todos, sumamos lo que haya marcado individualmente
+                seleccion_final.extend(items_grado_individuales)
+                total_final += valor_grado_individuales
+
+    return seleccion_final, total_final
 
 # --- VISTA 1: CLIENTE (PÚBLICA) ---
 def vista_cliente(pedido_id=None):
@@ -93,7 +119,8 @@ def vista_cliente(pedido_id=None):
         celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
 
         st.divider()
-        st.subheader("Selección de Libros")
+        # Aquí también aplica el cambio de "Seleccionar Pedido" implícitamente por el componente
+        st.subheader("Seleccionar Pedido:") 
         items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
         
         st.divider()
@@ -139,13 +166,11 @@ def vista_cliente(pedido_id=None):
 
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
-    # --- URL DE LA APP (CONFIG BARRA LATERAL) ---
     st.sidebar.header("⚙️ Configuración Link")
     url_app = st.sidebar.text_input("LINK App Publicada:", 
                                     value="https://tu-app.streamlit.app", 
                                     help="Pega aquí el link de internet de tu app.")
     
-    # --- MENÚ PRINCIPAL ---
     menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
 
     # ---------------- SECCIÓN 1: INVENTARIO ----------------
@@ -173,7 +198,7 @@ def vista_admin():
             resumen = df.groupby("Grado")[["Costo", "Precio Venta", "Ganancia"]].sum().reset_index()
             st.dataframe(resumen, use_container_width=True)
 
-    # ---------------- SECCIÓN 2: PANEL DE VENTAS (TODO AQUÍ) ----------------
+    # ---------------- SECCIÓN 2: PANEL DE VENTAS ----------------
     elif menu == "📊 Panel de Ventas":
         st.title("📊 Panel de Ventas")
         df_pedidos = cargar_pedidos()
@@ -197,8 +222,7 @@ def vista_admin():
 
         st.divider()
 
-        # B) INGRESO MANUAL (INTEGRADO AQUÍ)
-        # Usamos un expander para que no ocupe espacio si no se usa
+        # B) INGRESO MANUAL
         with st.expander("➕ Registrar Nuevo Pedido Manualmente (Presencial / Telefónico)", expanded=False):
             st.markdown("##### Formulario de Ingreso Manual")
             inventario = cargar_inventario()
@@ -211,8 +235,8 @@ def vista_admin():
                     m_nombre = mc1.text_input("Nombre Cliente")
                     m_celular = mc2.text_input("Celular")
                     
-                    st.write("**Seleccionar Libros:**")
-                    # Usamos una clave unica 'adm' para diferenciar
+                    # MODIFICACIÓN 3: Cambio de nombre del label
+                    st.write("**Seleccionar Pedido:**")
                     m_items, m_total = componente_seleccion_libros(inventario, "adm")
                     
                     st.write("---")
@@ -240,7 +264,7 @@ def vista_admin():
                             df_pedidos = pd.concat([df_pedidos, df_new], ignore_index=True)
                             guardar_pedido_db(df_pedidos)
                             st.success(f"✅ Pedido guardado exitosamente!")
-                            st.rerun() # Recarga la pagina para ver el pedido en la tabla abajo
+                            st.rerun()
 
         st.divider()
 
@@ -254,7 +278,6 @@ def vista_admin():
             else:
                 df_view = df_pedidos
 
-            # Tabla Editable
             edited = st.data_editor(
                 df_view,
                 column_config={
@@ -266,12 +289,10 @@ def vista_admin():
                 hide_index=True
             )
             if st.button("💾 Actualizar Estados en Tabla"):
-                # Actualizar DF original
                 df_pedidos.update(edited)
                 guardar_pedido_db(df_pedidos)
                 st.success("Cambios guardados.")
             
-            # Gestión Individual (Reenvío)
             st.write("---")
             st.caption("Herramientas de Edición:")
             p_sel = st.selectbox("Seleccionar Pedido para Editar/Reenviar:", df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente'])
