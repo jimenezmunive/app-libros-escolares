@@ -456,10 +456,8 @@ def vista_cliente_form(pedido_id=None):
 
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
-    st.sidebar.header("⚙️ Configuración Link")
-    url_app = st.sidebar.text_input("LINK App Publicada:", 
-                                    value="https://tu-app.streamlit.app", 
-                                    help="Pega aquí el link de internet de tu app.")
+    # URL FIJA PRE-CARGADA
+    url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app"
     
     menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
 
@@ -497,8 +495,6 @@ def vista_admin():
             st.subheader("📲 Enviar WhatsApp")
             tel = st.text_input("Celular Cliente:", key="tel_wa")
             if tel:
-                if "tu-app" in url_app or "localhost" in url_app:
-                    st.warning("⚠️ Recuerda pegar el LINK REAL en el menú izquierdo.")
                 link_ped = f"{url_app}?rol=cliente"
                 msg = f"Hola, haz tu pedido aquí: {link_ped}"
                 link_wa = generar_link_whatsapp(tel, msg)
@@ -673,7 +669,7 @@ def vista_admin():
             st.write("---")
             st.subheader("🛠️ Herramientas de Gestión")
             
-            # --- MEJORA: FILTRO PARA SELECTBOX ---
+            # --- FILTRO PARA SELECTBOX ---
             filtro_gestion = st.text_input("🔍 Filtrar lista de gestión (Escribe nombre o ID):", placeholder="Ej: 0005 o Juan")
             
             opciones = df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente']
