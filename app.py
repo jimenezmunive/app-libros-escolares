@@ -22,6 +22,11 @@ SCOPES = [
 
 SHEET_NAME = "DB_Libros_Escolares"
 
+# ---------------------------------------------------------
+# 🆔 ID DE TU CARPETA DE GOOGLE DRIVE (Ya insertado)
+ID_CARPETA_DRIVE = "1CfTrpHzp8L6dShFbWONfjOdE3c6sif-b"
+# ---------------------------------------------------------
+
 # --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
 if 'exito_cliente' not in st.session_state: st.session_state.exito_cliente = False
@@ -36,7 +41,7 @@ def obtener_credenciales():
         creds_dict = json.loads(json_str)
         return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     except Exception as e:
-        st.error(f"Error Credenciales: {e}")
+        st.error(f"Error Credenciales (Revisar Secrets): {e}")
         return None
 
 def conectar_sheets():
@@ -53,17 +58,25 @@ def conectar_drive():
         return service
     return None
 
-# --- FUNCIÓN: SUBIR IMAGEN A GOOGLE DRIVE (CORREGIDA) ---
+# --- FUNCIÓN: SUBIR IMAGEN A CARPETA ESPECÍFICA (SOLUCIÓN CUOTA) ---
 def subir_imagen_drive(uploaded_file, nombre_archivo):
-    """Sube la imagen a Drive y devuelve un Link VISIBLE para la app"""
+    """Sube la imagen a la carpeta compartida del usuario para evitar error de cuota"""
     if uploaded_file is None: return "No"
     
+    # Validación de seguridad
+    if not ID_CARPETA_DRIVE or "PEGAR_AQUI" in ID_CARPETA_DRIVE:
+        st.error("⚠️ ERROR CRÍTICO: No has configurado el ID_CARPETA_DRIVE en el código Python.")
+        return "Error"
+
     try:
         service = conectar_drive()
         if not service: return "Error Conexión Drive"
         
-        # 1. Metadata
-        file_metadata = {'name': nombre_archivo}
+        # 1. Metadata con PARENT FOLDER (Esto arregla el error 403 Storage Quota)
+        file_metadata = {
+            'name': nombre_archivo,
+            'parents': [ID_CARPETA_DRIVE] 
+        }
         
         # 2. Contenido
         media = MediaIoBaseUpload(uploaded_file, mimetype=uploaded_file.type)
@@ -77,26 +90,36 @@ def subir_imagen_drive(uploaded_file, nombre_archivo):
         
         file_id = file.get('id')
         
-        # 4. Hacer público (Reader)
+        # 4. Hacer público (Reader) para visualización
         permission = {'type': 'anyone', 'role': 'reader'}
         service.permissions().create(fileId=file_id, body=permission).execute()
         
-        # 5. RETORNAR ENLACE DE VISUALIZACIÓN DIRECTA (TRUCO PARA STREAMLIT)
+        # 5. RETORNAR ENLACE DE VISUALIZACIÓN
         return f"https://drive.google.com/uc?export=view&id={file_id}"
         
     except Exception as e:
-        st.error(f"Error detallado subiendo a Drive: {e}")
+        st.error(f"Error subiendo a Drive: {e}")
         return "Error"
 
-# --- FUNCIONES DE LIMPIEZA ---
+# --- FUNCIONES DE LIMPIEZA (BLINDAJE DE ERRORES) ---
 def limpiar_moneda(valor):
+    """Convierte cualquier cosa a float de forma segura. Evita ValueError."""
     try:
-        if isinstance(valor, (int, float)): return float(valor)
+        # Si ya es número, devolverlo
+        if isinstance(valor, (int, float)): 
+            return float(valor)
+        
+        if pd.isna(valor) or valor == "": 
+            return 0.0
+        
         valor_str = str(valor).strip()
-        if not valor_str: return 0.0
+        # Eliminar símbolos comunes
         valor_str = valor_str.replace('$', '').replace(' ', '').replace(',', '')
+        
+        if not valor_str: return 0.0
         return float(valor_str)
-    except: return 0.0
+    except:
+        return 0.0
 
 def normalizar_clave(texto):
     if not isinstance(texto, str): texto = str(texto)
@@ -125,22 +148,28 @@ def cargar_inventario():
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Inventario")
         data = wk.get_all_records()
+        
         if not data: return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta"])
         df = pd.DataFrame(data)
         
         cols_texto = ['Grado', 'Area', 'Libro']
         for col in cols_texto:
             if col in df.columns: df[col] = df[col].astype(str).str.strip()
+        
+        # Limpieza forzosa al cargar (Evita errores futuros)
+        if 'Precio Venta' in df.columns:
+            df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
+        else:
+            df['Precio Venta'] = 0.0
             
-        if 'Precio Venta' in df.columns: df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
-        else: df['Precio Venta'] = 0.0
-        
-        if 'Costo' in df.columns: df['Costo'] = df['Costo'].apply(limpiar_moneda)
-        else: df['Costo'] = 0.0
-        
+        if 'Costo' in df.columns:
+            df['Costo'] = df['Costo'].apply(limpiar_moneda)
+        else:
+            df['Costo'] = 0.0
+            
         return df
     except Exception as e:
-        st.error(f"Error Inventario: {e}")
+        st.error(f"Error cargando Inventario: {e}")
         return pd.DataFrame()
 
 def guardar_inventario(df):
@@ -149,6 +178,7 @@ def guardar_inventario(df):
     try:
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Inventario")
+        # Asegurar números antes de guardar
         df['Costo'] = df['Costo'].apply(limpiar_moneda)
         df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
         df['Ganancia'] = df['Precio Venta'] - df['Costo']
@@ -271,7 +301,9 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 key = f"{grado}_{r['Area']}_{r['Libro']}_{key_suffix}_{reset_counter}"
                 nombre = str(r['Libro']).strip()
                 area = str(r['Area']).strip()
-                precio = r['Precio Venta']
+                
+                # --- CORRECCIÓN CRÍTICA DE VALOR ---
+                precio = limpiar_moneda(r['Precio Venta'])
                 
                 label = f"{area} - {nombre} (${int(precio):,})"
                 item_new = f"[{grado}] ({area}) {nombre}"
@@ -415,7 +447,6 @@ def formulario_pedido(pedido_id):
                 n_f1 = datos.get('Comprobante', 'No')
                 n_f2 = datos.get('Comprobante2', 'No')
                 
-                # Intentamos subir imágenes. Si falla, mostramos error pero NO guardamos basura
                 error_subida = False
                 
                 if f1:
@@ -429,9 +460,8 @@ def formulario_pedido(pedido_id):
                     else: error_subida = True
                 
                 if error_subida:
-                    st.error("❌ Error subiendo imágenes a Google Drive. Revisa que la API esté habilitada en Google Cloud.")
+                    st.error("❌ Error subiendo imágenes a Drive. Verifica permisos y el ID de carpeta.")
                 else:
-                    # Guardamos solo si las imágenes subieron bien
                     hist = datos.get('Historial_Cambios', 'Original')
                     if es_modif: hist += f" | Modif: {fecha}"
 
@@ -596,7 +626,7 @@ def vista_admin():
         df_view = df
         if filtro: df_view = df[df['Cliente'].str.contains(filtro, case=False, na=False)]
         
-        # --- NUEVO: SELECTOR DE VISTA (LISTA vs MATRIZ) ---
+        # --- SELECTOR DE VISTA ---
         vista_modo = st.radio("Modo de Visualización:", ["Vista Lista (Edición Rápida)", "Vista Matriz (Detallada)"], horizontal=True)
         
         if vista_modo == "Vista Lista (Edición Rápida)":
@@ -639,11 +669,9 @@ def vista_admin():
                     areas = inv_g['Area'].unique()
                     patron = f"[{grado_sel}]"
                     
-                    # Filtramos pedidos de ese grado
                     df_grado = df_view[df_view['Detalle'].str.contains(patron, regex=False, na=False)].copy()
                     
                     if not df_grado.empty:
-                        # Preparamos columnas dinamicas
                         for a in areas: df_grado[a] = False
                         
                         for idx, row in df_grado.iterrows():
@@ -657,7 +685,6 @@ def vista_admin():
                                             if str(a).strip().lower() == pos.lower():
                                                 df_grado.at[idx, a] = True
                         
-                        # Mostramos tabla solo lectura
                         cols_ver = ["ID_Pedido", "Cliente", "Estado"] + list(areas)
                         st.dataframe(df_grado[cols_ver], hide_index=True, use_container_width=True)
                     else:
