@@ -18,11 +18,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Nombre de tu Hoja de Cálculo en Google Drive
+# Nombre EXACTO de tu Hoja de Cálculo en Google Drive
 SHEET_NAME = "DB_Libros_Escolares"
 
 # --- GESTIÓN DE DIRECTORIO TEMPORAL PARA IMÁGENES ---
-# NOTA: Las imágenes siguen siendo locales/temporales en esta versión.
+# NOTA: Las imágenes se guardan temporalmente en el servidor de Streamlit.
 DIR_COMPROBANTES = 'comprobantes'
 if not os.path.exists(DIR_COMPROBANTES):
     os.makedirs(DIR_COMPROBANTES)
@@ -38,7 +38,7 @@ if 'admin_autenticado' not in st.session_state: st.session_state.admin_autentica
 def conectar_google():
     """Conecta con Google Sheets usando el secreto guardado"""
     try:
-        # Leemos el JSON que pegaste en Secrets (usando la técnica del sándwich)
+        # Leemos el JSON que pegaste en Secrets
         json_str = st.secrets["google_json"]
         creds_dict = json.loads(json_str)
         
@@ -170,7 +170,7 @@ def obtener_nuevo_id(df_pedidos):
     return f"{nuevo:04d}"
 
 def guardar_archivo_soporte(uploaded_file, id_pedido, sufijo=""):
-    """Guarda imagen localmente (Volátil en Streamlit Cloud, Persistente en Localhost)"""
+    """Guarda imagen localmente (Volátil en Streamlit Cloud)"""
     if uploaded_file is None:
         return "No"
     try:
@@ -414,6 +414,7 @@ def formulario_pedido(pedido_id):
             p = os.path.join(DIR_COMPROBANTES, s1)
             if os.path.exists(p): st.image(p, width=200)
             else: st.warning("Imagen no disponible en servidor")
+        else: st.info("No hay soporte inicial")
         
         st.markdown("**📂 Cargar Soporte 2 (Si abona hoy):**")
         f2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'])
@@ -548,38 +549,38 @@ def vista_exito(pid):
         st.session_state.exito_cliente = False
         st.rerun()
 
-# --- VISTA ADMIN ---
+# --- VISTA ADMIN MODIFICADA ---
 def vista_admin():
     url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
     menu = st.sidebar.radio("Ir a:", ["📊 Ventas", "📦 Inventario"])
     
+    # --- SECCIÓN INVENTARIO SIMPLIFICADA (SIN UPLOAD) ---
     if menu == "📦 Inventario":
-        st.title("📦 Inventario (Google Sheets)")
+        st.title("📦 Inventario en Nube (Google Sheets)")
+        st.info("ℹ️ Para agregar o modificar libros, edita directamente tu archivo 'DB_Libros_Escolares' en Google Drive.")
         
-        with st.expander("Subir Excel Masivo"):
-            up = st.file_uploader("Excel", type=['xlsx','csv'])
-            if up:
-                try:
-                    df_up = pd.read_csv(up) if up.name.endswith('.csv') else pd.read_excel(up)
-                    guardar_inventario(df_up)
-                    st.success("¡Inventario actualizado en Google Sheets!")
-                except Exception as e: st.error(f"Error: {e}")
-                
         df = cargar_inventario()
         if not df.empty:
+            # Edición rápida de precios
             df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-            if st.button("Guardar Cambios en Nube"):
+            if st.button("💾 Guardar Cambios Rápidos"):
                 guardar_inventario(df_ed)
-                st.success("Guardado.")
+                st.success("¡Inventario actualizado en Google Sheets!")
                 st.rerun()
                 
             st.divider()
             try:
-                df['Ganancia'] = pd.to_numeric(df['Precio Venta']) - pd.to_numeric(df['Costo'])
+                df['Costo'] = pd.to_numeric(df['Costo'], errors='coerce').fillna(0)
+                df['Precio Venta'] = pd.to_numeric(df['Precio Venta'], errors='coerce').fillna(0)
+                df['Ganancia'] = df['Precio Venta'] - df['Costo']
                 res = df.groupby("Grado")[["Costo", "Precio Venta", "Ganancia"]].sum()
+                st.subheader("💰 Resumen Financiero por Grado")
                 st.dataframe(res, use_container_width=True)
             except: pass
+        else:
+            st.warning("⚠️ Tu inventario en Google Sheets está vacío o no se pudo leer.")
 
+    # --- SECCIÓN VENTAS ---
     elif menu == "📊 Ventas":
         st.title("📊 Panel Ventas (Google Sheets)")
         df = cargar_pedidos()
@@ -592,8 +593,9 @@ def vista_admin():
             st.code(f"{url_app}?rol=cliente", language="text")
             
         st.divider()
-        with st.expander("➕ Pedido Manual Admin"):
-            st.caption("Usa el inventario cargado para vender manual")
+        # Pedido Manual Admin
+        with st.expander("➕ Registrar Pedido Manual (Presencial)"):
+            st.caption("Usa esto si un padre está contigo en persona.")
             inv = cargar_inventario()
             if not inv.empty:
                 mn, mc = st.columns(2)
@@ -624,13 +626,11 @@ def vista_admin():
         st.divider()
         st.subheader("Listado")
         
-        # Generar Excel
         inv_act = cargar_inventario()
         if not df.empty and not inv_act.empty:
             excel = generar_excel_matriz_bytes(df, inv_act)
             st.download_button("📥 Descargar Reporte Matriz", excel, "Reporte_Matriz.xlsx")
             
-        # Filtros y Edición
         filtro = st.text_input("Buscar Pedido:")
         df_view = df
         if filtro: df_view = df[df['Cliente'].str.contains(filtro, case=False, na=False)]
@@ -641,43 +641,53 @@ def vista_admin():
             column_config={
                 "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"]),
                 "ID_Pedido": st.column_config.TextColumn(disabled=True),
-                "Detalle": st.column_config.TextColumn(disabled=True)
+                "Detalle": st.column_config.TextColumn(disabled=True),
+                "Total": st.column_config.NumberColumn(format="$%d"),
+                "Saldo": st.column_config.NumberColumn(format="$%d")
             },
             hide_index=True, use_container_width=True
         )
         if st.button("💾 Guardar Cambios Estados"):
-            # Actualizar DF original con cambios
+            cambios = False
             for idx, row in edited.iterrows():
-                # Buscar indice original por ID
                 mask = df['ID_Pedido'] == row['ID_Pedido']
                 if mask.any():
-                    df.loc[mask, 'Estado'] = row['Estado']
-                    df.loc[mask, 'Saldo'] = row['Saldo']
-            guardar_pedido_db(df)
-            st.success("Actualizado en Google Sheets")
+                    if df.loc[mask, 'Estado'].values[0] != row['Estado']:
+                        df.loc[mask, 'Estado'] = row['Estado']
+                        cambios = True
+                    if float(df.loc[mask, 'Saldo'].values[0]) != float(row['Saldo']):
+                         df.loc[mask, 'Saldo'] = row['Saldo']
+                         cambios = True
+            if cambios:
+                guardar_pedido_db(df)
+                st.success("Guardado en Google Sheets")
+            else: st.info("Sin cambios")
             
         # Gestión Individual
         st.divider()
         st.subheader("Gestión Detallada")
         opts = df['ID_Pedido'] + " - " + df['Cliente']
+        # Filtro para selectbox
+        bf = st.text_input("Filtrar lista:", placeholder="ID o Nombre...")
+        if bf: opts = opts[opts.str.contains(bf, case=False, na=False)]
+        
         sel_g = st.selectbox("Seleccionar:", opts)
         if sel_g:
             id_sel = sel_g.split(" - ")[0]
             row_sel = df[df['ID_Pedido'] == id_sel].iloc[0]
             
-            # Ver Soportes
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.caption("Soporte 1")
                 s1 = row_sel.get('Comprobante', 'No')
-                if s1 not in ['No', 'Manual', 'Manual/Presencial']:
+                if s1 not in ['No', 'Manual', 'Manual/Presencial', 'nan']:
                     if os.path.exists(os.path.join(DIR_COMPROBANTES, s1)):
                         st.image(os.path.join(DIR_COMPROBANTES, s1))
                     else: st.warning("No imagen")
             with c2:
                 st.caption("Soporte 2")
                 s2 = row_sel.get('Comprobante2', 'No')
-                if s2 not in ['No']:
+                if s2 not in ['No', 'nan']:
                     if os.path.exists(os.path.join(DIR_COMPROBANTES, s2)):
                         st.image(os.path.join(DIR_COMPROBANTES, s2))
             with c3:
@@ -685,7 +695,7 @@ def vista_admin():
                 if st.button("🗑️ ELIMINAR PEDIDO", type="primary"):
                     df = df[df['ID_Pedido'] != id_sel]
                     guardar_pedido_db(df)
-                    st.success("Eliminado de Google Sheets")
+                    st.success("Eliminado")
                     st.rerun()
 
 # --- ROUTER ---
@@ -705,7 +715,6 @@ else:
         with c:
             st.title("🔒 Admin")
             pwd = st.text_input("Contraseña:", type="password")
-            # Lee clave de secrets
             if st.button("Entrar"):
                 if pwd == st.secrets.get("PASSWORD_ADMIN", "12345"):
                     st.session_state.admin_autenticado = True
