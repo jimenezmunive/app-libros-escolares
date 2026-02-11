@@ -732,12 +732,51 @@ def vista_admin():
         else:
             st.info("No hay pedidos registrados aún.")
 
-# --- ROUTER ---
+# --- ROUTER DE SEGURIDAD ---
 params = st.query_params
-if params.get("rol") == "cliente":
+rol = params.get("rol")
+
+# 1. Lógica para CLIENTES (Acceso Libre con Link)
+if rol == "cliente":
     if st.session_state.exito_cliente and st.session_state.ultimo_pedido_cliente:
         vista_exito_cliente(st.session_state.ultimo_pedido_cliente)
     else:
         vista_cliente_form(params.get("pedido_id"))
+
+# 2. Lógica para ADMINISTRADOR (Protegido con Contraseña)
 else:
-    vista_admin()
+    # Verificamos si ya inició sesión
+    if 'admin_autenticado' not in st.session_state:
+        st.session_state.admin_autenticado = False
+
+    if not st.session_state.admin_autenticado:
+        # PANTALLA DE LOGIN
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        c_login1, c_login2, c_login3 = st.columns([1,2,1])
+        
+        with c_login2:
+            st.image("https://cdn-icons-png.flaticon.com/512/3064/3064197.png", width=100)
+            st.title("🔒 Acceso Administrativo")
+            st.info("Por favor ingresa la contraseña para gestionar los pedidos.")
+            
+            # Busca la contraseña en los secretos de Streamlit, si no existe usa "12345" por defecto
+            contra_real = st.secrets.get("PASSWORD_ADMIN", "12345")
+            
+            contra_input = st.text_input("Contraseña:", type="password")
+            
+            if st.button("Ingresar al Sistema"):
+                if contra_input == str(contra_real):
+                    st.session_state.admin_autenticado = True
+                    st.success("Acceso concedido")
+                    st.rerun()
+                else:
+                    st.error("⛔ Contraseña incorrecta")
+
+    else:
+        # Si la contraseña fue correcta, mostramos la vista de admin normal
+        # Botón para cerrar sesión
+        if st.sidebar.button("🔒 Cerrar Sesión"):
+            st.session_state.admin_autenticado = False
+            st.rerun()
+            
+        vista_admin()
