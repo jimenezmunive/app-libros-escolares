@@ -21,7 +21,6 @@ if not os.path.exists(DIR_COMPROBANTES):
 # --- INICIALIZAR ESTADO DE SESIÓN ---
 if 'reset_manual' not in st.session_state:
     st.session_state.reset_manual = 0
-
 if 'exito_cliente' not in st.session_state:
     st.session_state.exito_cliente = False
 if 'ultimo_pedido_cliente' not in st.session_state:
@@ -35,6 +34,10 @@ def normalizar_clave(texto):
     texto = unicodedata.normalize('NFKD', texto).encode('ASCII', 'ignore').decode('utf-8')
     return texto
 
+def limpiar_numero(num):
+    """Deja solo números para comparar celulares"""
+    return re.sub(r'\D', '', str(num))
+
 def obtener_nuevo_id(df_pedidos):
     """Genera un ID consecutivo (0001, 0002...)."""
     max_id = 0
@@ -44,7 +47,6 @@ def obtener_nuevo_id(df_pedidos):
                 val = int(pid)
                 if val > max_id:
                     max_id = val
-    
     nuevo = max_id + 1
     return f"{nuevo:04d}"
 
@@ -255,6 +257,70 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
             
     return seleccion_final, total_final
 
+# --- COMPONENTE DE VISUALIZACIÓN DE MATRIZ (SOLO LECTURA) ---
+def renderizar_matriz_lectura(fila, inventario):
+    st.markdown(f"**Pedido ID:** {fila['ID_Pedido']} | **Fecha:** {fila['Fecha_Creacion']}")
+    
+    col_fin1, col_fin2, col_fin3 = st.columns(3)
+    col_fin1.metric("Total", f"${fila['Total']:,.0f}")
+    col_fin2.metric("Abonado", f"${fila['Abonado']:,.0f}")
+    col_fin3.metric("Saldo Pendiente", f"${fila['Saldo']:,.0f}", delta_color="inverse")
+    
+    detalles = fila['Detalle']
+    items = detalles.split(" | ")
+    
+    libros_por_grado = {}
+    for item in items:
+        match_grado = re.search(r'\[(.*?)\]', item)
+        if match_grado:
+            g = match_grado.group(1)
+            if g not in libros_por_grado: libros_por_grado[g] = []
+            libros_por_grado[g].append(item)
+    
+    if libros_por_grado:
+        for grado, lista_items in libros_por_grado.items():
+            st.caption(f"🎓 Grado: {grado}")
+            inv_grado = inventario[inventario['Grado'] == grado]
+            
+            if not inv_grado.empty:
+                areas = inv_grado['Area'].unique()
+                data_matrix = {area: ["❌"] for area in areas}
+                
+                for item in lista_items:
+                    area_encontrada = None
+                    match_area = re.search(r'\((.*?)\)', item)
+                    if match_area:
+                        posible_area = match_area.group(1).strip()
+                        for a in areas:
+                            if str(a).strip().lower() == posible_area.lower():
+                                area_encontrada = a
+                                break
+                    
+                    if not area_encontrada:
+                        patron = f"[{grado}]"
+                        nombre_raw = item.replace(patron, "").strip()
+                    
+                    if area_encontrada:
+                        data_matrix[area_encontrada] = ["✅"]
+                
+                st.table(pd.DataFrame(data_matrix))
+    
+    # Visualizar Soportes
+    st.markdown("**📂 Soportes Adjuntos:**")
+    cs1, cs2 = st.columns(2)
+    with cs1:
+        s1 = fila.get('Comprobante', 'No')
+        if s1 and s1 not in ['No', 'Manual/Presencial']:
+            ruta1 = os.path.join(DIR_COMPROBANTES, s1)
+            if os.path.exists(ruta1): st.image(ruta1, caption="Soporte 1", width=150)
+    with cs2:
+        s2 = fila.get('Comprobante2', 'No')
+        if s2 and s2 not in ['No']:
+            ruta2 = os.path.join(DIR_COMPROBANTES, s2)
+            if os.path.exists(ruta2): st.image(ruta2, caption="Soporte 2", width=150)
+    
+    st.divider()
+
 # --- LIMPIEZA MANUAL ---
 def limpiar_formulario_manual():
     st.session_state.man_nom = ""
@@ -263,83 +329,89 @@ def limpiar_formulario_manual():
     st.session_state.man_est = "Nuevo"
     st.session_state.reset_manual += 1
 
-# --- VISTA DE ÉXITO (CONFIRMACIÓN PEDIDO) ---
-def vista_exito_cliente(pedido_id):
-    st.balloons() 
-    st.success("¡Gracias! Tu pedido ha sido confirmado exitosamente.")
-    
-    df_pedidos = cargar_pedidos()
-    inventario = cargar_inventario()
-    pedido = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)] # asegurar string
-    
-    if not pedido.empty:
-        fila = pedido.iloc[0]
-        
-        st.write(f"### 🧾 Resumen de tu Pedido #{fila['ID_Pedido']}")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Cliente", fila['Cliente'])
-        c2.metric("Total Pedido", f"${fila['Total']:,.0f}")
-        c3.metric("Saldo Pendiente", f"${fila['Saldo']:,.0f}", delta_color="inverse")
-        
-        st.divider()
-        st.write("##### Detalle de Ayuda Solicitada")
-        
-        detalles = fila['Detalle']
-        items = detalles.split(" | ")
-        
-        libros_por_grado = {}
-        for item in items:
-            match_grado = re.search(r'\[(.*?)\]', item)
-            if match_grado:
-                g = match_grado.group(1)
-                if g not in libros_por_grado: libros_por_grado[g] = []
-                libros_por_grado[g].append(item)
-        
-        if libros_por_grado:
-            for grado, lista_items in libros_por_grado.items():
-                st.markdown(f"#### 🎓 Grado: {grado}")
-                inv_grado = inventario[inventario['Grado'] == grado]
-                
-                if not inv_grado.empty:
-                    areas = inv_grado['Area'].unique()
-                    data_matrix = {area: ["❌"] for area in areas}
-                    
-                    for item in lista_items:
-                        area_encontrada = None
-                        match_area = re.search(r'\((.*?)\)', item)
-                        if match_area:
-                            posible_area = match_area.group(1).strip()
-                            for a in areas:
-                                if str(a).strip().lower() == posible_area.lower():
-                                    area_encontrada = a
-                                    break
-                        
-                        if not area_encontrada:
-                            patron = f"[{grado}]"
-                            nombre_raw = item.replace(patron, "").strip()
-                        
-                        if area_encontrada:
-                            data_matrix[area_encontrada] = ["✅"]
-                    
-                    df_viz = pd.DataFrame(data_matrix)
-                    st.table(df_viz)
-                else:
-                    st.warning(f"No hay información de inventario para {grado}")
-        else:
-            st.info(detalles)
-
-    st.divider()
-    if st.button("⬅️ Realizar otro pedido"):
-        st.session_state.exito_cliente = False
-        st.session_state.ultimo_pedido_cliente = None
-        st.rerun()
-
-# --- VISTA 1: FORMULARIO CLIENTE ---
-def vista_cliente_form(pedido_id=None):
+# --- VISTA 1: FORMULARIO CLIENTE (CON MENÚ DE AUTOGESTIÓN) ---
+def vista_cliente_principal(pedido_id_param=None):
     st.image("https://cdn-icons-png.flaticon.com/512/2232/2232688.png", width=60)
-    # 1. CAMBIO DE TÍTULO
     st.title("📚 Pedido de Ayuda Escolar")
-    
+
+    # Si viene con ID param (desde link de admin), forzamos edición directa ignorando menú
+    if pedido_id_param:
+        formulario_pedido(pedido_id_param)
+        return
+
+    # MENÚ SUPERIOR
+    opcion = st.radio("Seleccione una opción:", 
+                      ["• Crear Pedidos", "• Revisar Pedido", "• Editar Pedidos / Confirmar un Pago"], 
+                      horizontal=True)
+    st.divider()
+
+    inventario = cargar_inventario()
+    df_pedidos = cargar_pedidos()
+
+    # ---------------- OPCIÓN 1: CREAR ----------------
+    if opcion == "• Crear Pedidos":
+        formulario_pedido(None) # None = Nuevo Pedido
+
+    # ---------------- OPCIÓN 2: REVISAR (SOLO LECTURA) ----------------
+    elif opcion == "• Revisar Pedido":
+        st.subheader("🔍 Consultar mis pedidos")
+        cel_busqueda = st.text_input("Ingresa tu número de celular registrado:")
+        
+        if st.button("Buscar Pedidos"):
+            if not cel_busqueda:
+                st.warning("Por favor ingresa un número.")
+            else:
+                # Filtrar normalizando número
+                cel_clean = limpiar_numero(cel_busqueda)
+                df_pedidos['Cel_Clean'] = df_pedidos['Celular'].apply(limpiar_numero)
+                resultados = df_pedidos[df_pedidos['Cel_Clean'] == cel_clean]
+                
+                if resultados.empty:
+                    st.error("No encontramos pedidos con ese número.")
+                else:
+                    # Lógica: Mostrar todos los que deben plata. Si no debe, mostrar el último.
+                    pendientes = resultados[resultados['Saldo'] > 0]
+                    
+                    if not pendientes.empty:
+                        st.info(f"Hemos encontrado {len(pendientes)} pedido(s) con saldo pendiente.")
+                        for idx, row in pendientes.iterrows():
+                            renderizar_matriz_lectura(row, inventario)
+                    else:
+                        st.success("¡Estás al día! Aquí está tu último pedido registrado:")
+                        ultimo = resultados.iloc[-1]
+                        renderizar_matriz_lectura(ultimo, inventario)
+
+    # ---------------- OPCIÓN 3: EDITAR / CONFIRMAR PAGO ----------------
+    elif opcion == "• Editar Pedidos / Confirmar un Pago":
+        st.subheader("💳 Confirmar Pago / Editar")
+        cel_edit = st.text_input("Ingresa tu número de celular para buscar pendientes:")
+        
+        if st.button("Buscar Pendientes"):
+            st.session_state.edit_found = False # Reset
+            
+        if cel_edit:
+             cel_clean = limpiar_numero(cel_edit)
+             df_pedidos['Cel_Clean'] = df_pedidos['Celular'].apply(limpiar_numero)
+             # SOLO PEDIDOS CON DEUDA
+             resultados = df_pedidos[(df_pedidos['Cel_Clean'] == cel_clean) & (df_pedidos['Saldo'] > 0)]
+             
+             if resultados.empty:
+                 st.info("No tienes pedidos pendientes de pago con ese número.")
+             else:
+                 st.write(f"Encontramos {len(resultados)} pedido(s) pendiente(s).")
+                 
+                 opciones_dict = {f"{r['ID_Pedido']} - {r['Fecha_Creacion']} (Saldo: ${r['Saldo']:,.0f})": r['ID_Pedido'] for idx, r in resultados.iterrows()}
+                 seleccion_txt = st.selectbox("Selecciona el pedido a gestionar:", list(opciones_dict.keys()))
+                 
+                 if seleccion_txt:
+                     id_seleccionado = opciones_dict[seleccion_txt]
+                     st.markdown("---")
+                     # LLAMAMOS AL FORMULARIO EN MODO EDICIÓN
+                     formulario_pedido(id_seleccionado)
+
+
+# --- SUB-FUNCIÓN: EL FORMULARIO REAL (Reutilizable) ---
+def formulario_pedido(pedido_id):
     inventario = cargar_inventario()
     if inventario.empty:
         st.error("El sistema no tiene libros cargados.")
@@ -350,18 +422,18 @@ def vista_cliente_form(pedido_id=None):
     
     if pedido_id:
         df_pedidos = cargar_pedidos()
+        # Asegurar tipo string
         pedido_existente = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)]
         if not pedido_existente.empty:
             datos_previos = pedido_existente.iloc[0].to_dict()
             es_modificacion = True
-            st.info(f"📝 Editando pedido ID: {datos_previos['ID_Pedido']}")
+            st.info(f"📝 Gestionando pedido ID: {datos_previos['ID_Pedido']}")
 
     c1, c2 = st.columns(2)
     nombre = c1.text_input("Nombre Completo", value=datos_previos.get('Cliente', ''))
     celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
 
     st.divider()
-    # 2. CAMBIO DE SUBTÍTULO
     st.subheader("Necesito ayuda en:") 
     
     items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
@@ -382,25 +454,24 @@ def vista_cliente_form(pedido_id=None):
         st.write(f"**Abonado anteriormente:** ${val_abono_anterior:,.0f}")
     
     nuevo_abono = st.number_input("Valor a transferir HOY (se sumará al anterior):", min_value=0.0, step=1000.0)
-    # 3. MENSAJE DE ADVERTENCIA PARA VALIDACIÓN DE SOPORTE
     st.caption("ℹ️ Nota: El valor registrado será validado administrativamente con el soporte adjunto.")
     
+    archivo1 = None
+    archivo2 = None
+
     if es_modificacion:
         st.write("---")
-        st.markdown("**📂 Cargar Segundo Soporte (Opcional)**")
+        st.markdown("**📂 Cargar Segundo Soporte (Obligatorio si abona)**")
         archivo2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'], key="up_soporte_2")
-        archivo1 = None 
     else:
         st.write("---")
         st.markdown("**📂 Cargar Soporte de Pago**")
         archivo1 = st.file_uploader("Subir Comprobante", type=['jpg','png','jpeg','pdf'], key="up_soporte_1")
-        archivo2 = None
 
     st.write("---")
     
     if st.button("✅ CONFIRMAR Y GUARDAR PEDIDO"):
         with st.spinner("Procesando..."):
-            # Calculamos total acumulado para validar
             total_abonado_acumulado = val_abono_anterior + nuevo_abono
             
             if not nombre or not celular:
@@ -411,16 +482,14 @@ def vista_cliente_form(pedido_id=None):
                 st.error("⚠️ Ingrese el valor del abono.")
             elif (not es_modificacion) and (not archivo1):
                 st.error("⚠️ Debe subir el comprobante de pago.")
-            # 4. VALIDACIÓN DE PAGO TOTAL
             elif tipo == "Pago Total" and total_abonado_acumulado < total:
-                st.error(f"⚠️ Has seleccionado 'Pago Total', pero el valor ingresado (${total_abonado_acumulado:,.0f}) es menor al Total a Pagar (${total:,.0f}). Por favor ajusta el monto o selecciona 'Abono Parcial'.")
+                st.error(f"⚠️ Has seleccionado 'Pago Total', pero el valor ingresado (${total_abonado_acumulado:,.0f}) es menor al Total a Pagar (${total:,.0f}).")
             else:
                 df = cargar_pedidos()
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 abono_total = total_abonado_acumulado
                 saldo = total - abono_total
                 
-                # GENERACIÓN DE ID CONSECUTIVO O USO DE EXISTENTE
                 if es_modificacion:
                     id_actual = str(pedido_id)
                 else:
@@ -460,9 +529,28 @@ def vista_cliente_form(pedido_id=None):
                 guardar_pedido_db(df)
                 st.rerun()
 
+# --- VISTA DE ÉXITO (CONFIRMACIÓN PEDIDO) ---
+def vista_exito_cliente(pedido_id):
+    st.balloons() 
+    st.success("¡Gracias! Tu pedido ha sido confirmado exitosamente.")
+    
+    df_pedidos = cargar_pedidos()
+    inventario = cargar_inventario()
+    # Asegurar string
+    pedido = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)]
+    
+    if not pedido.empty:
+        fila = pedido.iloc[0]
+        renderizar_matriz_lectura(fila, inventario)
+
+    st.divider()
+    if st.button("⬅️ Volver al Inicio"):
+        st.session_state.exito_cliente = False
+        st.session_state.ultimo_pedido_cliente = None
+        st.rerun()
+
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
-    # URL FIJA PRE-CARGADA
     url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
     
     menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
@@ -552,10 +640,7 @@ def vista_admin():
                         st.error("Faltan Libros")
                     else:
                         fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        
-                        # ID CONSECUTIVO MANUAL
                         nuevo_id = obtener_nuevo_id(df_pedidos)
-                        
                         nuevo_p = {
                             "ID_Pedido": nuevo_id, "Fecha_Creacion": fecha, "Ultima_Modificacion": fecha,
                             "Cliente": m_nombre, "Celular": m_celular, "Detalle": " | ".join(m_items),
@@ -629,7 +714,6 @@ def vista_admin():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
                                 if patron in item:
-                                    # LÓGICA VISUALIZACIÓN MATRIZ APP (OPCIÓN 1)
                                     area_encontrada = None
                                     match = re.search(r'\((.*?)\)', item)
                                     if match:
@@ -675,9 +759,7 @@ def vista_admin():
             st.write("---")
             st.subheader("🛠️ Herramientas de Gestión")
             
-            # --- FILTRO PARA SELECTBOX ---
             filtro_gestion = st.text_input("🔍 Filtrar lista de gestión (Escribe nombre o ID):", placeholder="Ej: 0005 o Juan")
-            
             opciones = df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente']
             if filtro_gestion:
                 opciones = opciones[opciones.str.contains(filtro_gestion, case=False, na=False)]
@@ -736,21 +818,20 @@ def vista_admin():
 params = st.query_params
 rol = params.get("rol")
 
-# 1. Lógica para CLIENTES (Acceso Libre con Link)
+# 1. CLIENTES (Acceso Libre)
 if rol == "cliente":
     if st.session_state.exito_cliente and st.session_state.ultimo_pedido_cliente:
         vista_exito_cliente(st.session_state.ultimo_pedido_cliente)
     else:
-        vista_cliente_form(params.get("pedido_id"))
+        # Llamamos a la nueva vista con menú, pasando ID si viene en URL
+        vista_cliente_principal(params.get("pedido_id"))
 
-# 2. Lógica para ADMINISTRADOR (Protegido con Contraseña)
+# 2. ADMINISTRADOR (Protegido)
 else:
-    # Verificamos si ya inició sesión
     if 'admin_autenticado' not in st.session_state:
         st.session_state.admin_autenticado = False
 
     if not st.session_state.admin_autenticado:
-        # PANTALLA DE LOGIN
         st.markdown("<br><br>", unsafe_allow_html=True)
         c_login1, c_login2, c_login3 = st.columns([1,2,1])
         
@@ -759,9 +840,7 @@ else:
             st.title("🔒 Acceso Administrativo")
             st.info("Por favor ingresa la contraseña para gestionar los pedidos.")
             
-            # Busca la contraseña en los secretos de Streamlit, si no existe usa "12345" por defecto
             contra_real = st.secrets.get("PASSWORD_ADMIN", "12345")
-            
             contra_input = st.text_input("Contraseña:", type="password")
             
             if st.button("Ingresar al Sistema"):
@@ -773,8 +852,6 @@ else:
                     st.error("⛔ Contraseña incorrecta")
 
     else:
-        # Si la contraseña fue correcta, mostramos la vista de admin normal
-        # Botón para cerrar sesión
         if st.sidebar.button("🔒 Cerrar Sesión"):
             st.session_state.admin_autenticado = False
             st.rerun()
