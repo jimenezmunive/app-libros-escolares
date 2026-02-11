@@ -8,7 +8,7 @@ import re
 from datetime import datetime
 import uuid
 
-st.set_page_config(page_title="Gestión Libros Escolares", layout="wide", page_icon="📚")
+st.set_page_config(page_title="Pedido de Ayuda Escolar", layout="wide", page_icon="📚")
 
 # --- CONFIGURACIÓN DE RUTAS ---
 FILE_INVENTARIO = 'inventario.csv'
@@ -36,11 +36,10 @@ def normalizar_clave(texto):
     return texto
 
 def obtener_nuevo_id(df_pedidos):
-    """Genera un ID consecutivo (0001, 0002...). Ignora IDs no numéricos antiguos."""
+    """Genera un ID consecutivo (0001, 0002...)."""
     max_id = 0
     if not df_pedidos.empty:
         for pid in df_pedidos['ID_Pedido']:
-            # Verificar si es numérico
             if str(pid).isdigit():
                 val = int(pid)
                 if val > max_id:
@@ -76,7 +75,6 @@ def guardar_inventario(df):
 def cargar_pedidos():
     if os.path.exists(FILE_PEDIDOS):
         df = pd.read_csv(FILE_PEDIDOS)
-        # Asegurar compatibilidad columna ID como string para evitar problemas de tipos
         df['ID_Pedido'] = df['ID_Pedido'].astype(str)
         if "Comprobante2" not in df.columns:
             df["Comprobante2"] = "No"
@@ -284,13 +282,11 @@ def vista_exito_cliente(pedido_id):
         c3.metric("Saldo Pendiente", f"${fila['Saldo']:,.0f}", delta_color="inverse")
         
         st.divider()
-        st.write("##### Detalle de Libros Seleccionados")
+        st.write("##### Detalle de Ayuda Solicitada")
         
-        # --- LÓGICA DE VISUALIZACIÓN POR GRADOS ---
         detalles = fila['Detalle']
         items = detalles.split(" | ")
         
-        # 1. Agrupar ítems por Grado
         libros_por_grado = {}
         for item in items:
             match_grado = re.search(r'\[(.*?)\]', item)
@@ -341,7 +337,8 @@ def vista_exito_cliente(pedido_id):
 # --- VISTA 1: FORMULARIO CLIENTE ---
 def vista_cliente_form(pedido_id=None):
     st.image("https://cdn-icons-png.flaticon.com/512/2232/2232688.png", width=60)
-    st.title("📚 Gestión de Pedido Escolar")
+    # 1. CAMBIO DE TÍTULO
+    st.title("📚 Pedido de Ayuda Escolar")
     
     inventario = cargar_inventario()
     if inventario.empty:
@@ -364,7 +361,8 @@ def vista_cliente_form(pedido_id=None):
     celular = c2.text_input("Celular", value=datos_previos.get('Celular', ''))
 
     st.divider()
-    st.subheader("Seleccionar Libros:") 
+    # 2. CAMBIO DE SUBTÍTULO
+    st.subheader("Necesito ayuda en:") 
     
     items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
     
@@ -384,6 +382,8 @@ def vista_cliente_form(pedido_id=None):
         st.write(f"**Abonado anteriormente:** ${val_abono_anterior:,.0f}")
     
     nuevo_abono = st.number_input("Valor a transferir HOY (se sumará al anterior):", min_value=0.0, step=1000.0)
+    # 3. MENSAJE DE ADVERTENCIA PARA VALIDACIÓN DE SOPORTE
+    st.caption("ℹ️ Nota: El valor registrado será validado administrativamente con el soporte adjunto.")
     
     if es_modificacion:
         st.write("---")
@@ -400,25 +400,31 @@ def vista_cliente_form(pedido_id=None):
     
     if st.button("✅ CONFIRMAR Y GUARDAR PEDIDO"):
         with st.spinner("Procesando..."):
+            # Calculamos total acumulado para validar
+            total_abonado_acumulado = val_abono_anterior + nuevo_abono
+            
             if not nombre or not celular:
                 st.error("⚠️ Falta Nombre o Celular")
             elif total == 0:
-                st.error("⚠️ Seleccione al menos un libro")
+                st.error("⚠️ Seleccione al menos un ítem")
             elif (not es_modificacion) and (nuevo_abono == 0):
-                    st.error("⚠️ Ingrese el valor del abono.")
+                st.error("⚠️ Ingrese el valor del abono.")
             elif (not es_modificacion) and (not archivo1):
-                    st.error("⚠️ Debe subir el comprobante de pago.")
+                st.error("⚠️ Debe subir el comprobante de pago.")
+            # 4. VALIDACIÓN DE PAGO TOTAL
+            elif tipo == "Pago Total" and total_abonado_acumulado < total:
+                st.error(f"⚠️ Has seleccionado 'Pago Total', pero el valor ingresado (${total_abonado_acumulado:,.0f}) es menor al Total a Pagar (${total:,.0f}). Por favor ajusta el monto o selecciona 'Abono Parcial'.")
             else:
                 df = cargar_pedidos()
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                abono_total = val_abono_anterior + nuevo_abono if es_modificacion else nuevo_abono
+                abono_total = total_abonado_acumulado
                 saldo = total - abono_total
                 
                 # GENERACIÓN DE ID CONSECUTIVO O USO DE EXISTENTE
                 if es_modificacion:
                     id_actual = str(pedido_id)
                 else:
-                    id_actual = obtener_nuevo_id(df) # Función nueva
+                    id_actual = obtener_nuevo_id(df) 
                 
                 nombre_arch1 = datos_previos.get('Comprobante', 'No')
                 nombre_arch2 = datos_previos.get('Comprobante2', 'No')
@@ -457,7 +463,7 @@ def vista_cliente_form(pedido_id=None):
 # --- VISTA 2: ADMINISTRADOR ---
 def vista_admin():
     # URL FIJA PRE-CARGADA
-    url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app"
+    url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
     
     menu = st.sidebar.radio("Navegación:", ["📊 Panel de Ventas", "📦 Inventario de Libros"])
 
