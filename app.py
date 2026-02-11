@@ -361,7 +361,6 @@ def vista_cliente_principal(pedido_id_param=None):
             if not cel_busqueda:
                 st.warning("Por favor ingresa un número.")
             else:
-                # Filtrar normalizando número
                 cel_clean = limpiar_numero(cel_busqueda)
                 df_pedidos['Cel_Clean'] = df_pedidos['Celular'].apply(limpiar_numero)
                 resultados = df_pedidos[df_pedidos['Cel_Clean'] == cel_clean]
@@ -369,9 +368,8 @@ def vista_cliente_principal(pedido_id_param=None):
                 if resultados.empty:
                     st.error("No encontramos pedidos con ese número.")
                 else:
-                    # Lógica: Mostrar todos los que deben plata. Si no debe, mostrar el último.
+                    # Mostrar deudas o último
                     pendientes = resultados[resultados['Saldo'] > 0]
-                    
                     if not pendientes.empty:
                         st.info(f"Hemos encontrado {len(pendientes)} pedido(s) con saldo pendiente.")
                         for idx, row in pendientes.iterrows():
@@ -387,7 +385,7 @@ def vista_cliente_principal(pedido_id_param=None):
         cel_edit = st.text_input("Ingresa tu número de celular para buscar pendientes:")
         
         if st.button("Buscar Pendientes"):
-            st.session_state.edit_found = False # Reset
+            st.session_state.edit_found = False
             
         if cel_edit:
              cel_clean = limpiar_numero(cel_edit)
@@ -422,7 +420,6 @@ def formulario_pedido(pedido_id):
     
     if pedido_id:
         df_pedidos = cargar_pedidos()
-        # Asegurar tipo string
         pedido_existente = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)]
         if not pedido_existente.empty:
             datos_previos = pedido_existente.iloc[0].to_dict()
@@ -436,6 +433,7 @@ def formulario_pedido(pedido_id):
     st.divider()
     st.subheader("Necesito ayuda en:") 
     
+    # Checkboxes editables
     items, total = componente_seleccion_libros(inventario, "cli", datos_previos.get('Detalle', ''))
     
     st.divider()
@@ -461,7 +459,20 @@ def formulario_pedido(pedido_id):
 
     if es_modificacion:
         st.write("---")
-        st.markdown("**📂 Cargar Segundo Soporte (Obligatorio si abona)**")
+        # 1. MOSTRAR SOPORTE 1 SOLO LECTURA
+        st.markdown("**📂 Soporte 1 (Inicial) - SOLO LECTURA:**")
+        s1_previo = datos_previos.get('Comprobante', 'No')
+        if s1_previo and s1_previo not in ['No', 'Manual/Presencial']:
+             ruta_s1 = os.path.join(DIR_COMPROBANTES, s1_previo)
+             if os.path.exists(ruta_s1):
+                 st.image(ruta_s1, width=200, caption="Comprobante Inicial")
+             else:
+                 st.warning("El archivo original no se encuentra.")
+        else:
+             st.info("No se cargó soporte inicial (o fue manual).")
+
+        # 2. CARGAR SOPORTE 2
+        st.markdown("**📂 Cargar Segundo Soporte (Obligatorio si abona):**")
         archivo2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'], key="up_soporte_2")
     else:
         st.write("---")
@@ -536,7 +547,6 @@ def vista_exito_cliente(pedido_id):
     
     df_pedidos = cargar_pedidos()
     inventario = cargar_inventario()
-    # Asegurar string
     pedido = df_pedidos[df_pedidos['ID_Pedido'] == str(pedido_id)]
     
     if not pedido.empty:
@@ -714,6 +724,7 @@ def vista_admin():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
                                 if patron in item:
+                                    # LÓGICA VISUALIZACIÓN MATRIZ APP (OPCIÓN 1)
                                     area_encontrada = None
                                     match = re.search(r'\((.*?)\)', item)
                                     if match:
@@ -759,7 +770,9 @@ def vista_admin():
             st.write("---")
             st.subheader("🛠️ Herramientas de Gestión")
             
+            # --- FILTRO PARA SELECTBOX ---
             filtro_gestion = st.text_input("🔍 Filtrar lista de gestión (Escribe nombre o ID):", placeholder="Ej: 0005 o Juan")
+            
             opciones = df_pedidos['ID_Pedido'] + " - " + df_pedidos['Cliente']
             if filtro_gestion:
                 opciones = opciones[opciones.str.contains(filtro_gestion, case=False, na=False)]
