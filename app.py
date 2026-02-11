@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 import json
 import os
 import io
@@ -12,141 +14,91 @@ from datetime import datetime
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Pedido de Ayuda Escolar", layout="wide", page_icon="📚")
 
-# --- CONFIGURACIÓN GOOGLE SHEETS ---
+# --- CONFIGURACIÓN GOOGLE ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
-# Nombre EXACTO de tu Hoja de Cálculo en Google Drive
 SHEET_NAME = "DB_Libros_Escolares"
 
-# --- GESTIÓN DE DIRECTORIO TEMPORAL PARA IMÁGENES ---
-# NOTA: Las imágenes se guardan temporalmente en el servidor de Streamlit.
-DIR_COMPROBANTES = 'comprobantes'
-if not os.path.exists(DIR_COMPROBANTES):
-    os.makedirs(DIR_COMPROBANTES)
-
-# --- INICIALIZAR ESTADO ---
+# --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
 if 'exito_cliente' not in st.session_state: st.session_state.exito_cliente = False
 if 'ultimo_pedido_cliente' not in st.session_state: st.session_state.ultimo_pedido_cliente = None
 if 'admin_autenticado' not in st.session_state: st.session_state.admin_autenticado = False
 
-# --- CONEXIÓN A GOOGLE (LA CAJA FUERTE) ---
+# --- CONEXIÓN ROBUSTA (SHEETS + DRIVE) ---
 @st.cache_resource
-def conectar_google():
-    """Conecta con Google Sheets usando el secreto guardado"""
+def obtener_credenciales():
     try:
-        # Leemos el JSON que pegaste en Secrets
         json_str = st.secrets["google_json"]
         creds_dict = json.loads(json_str)
-        
-        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-        client = gspread.authorize(creds)
-        return client
+        return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     except Exception as e:
-        st.error(f"Error conectando a Google: {e}")
+        st.error(f"Error Credenciales: {e}")
         return None
 
-# --- FUNCIONES DE DATOS (CRUD EN LA NUBE) ---
-def cargar_inventario():
-    """Descarga el inventario desde Google Sheets"""
-    client = conectar_google()
-    if not client: return pd.DataFrame()
+def conectar_sheets():
+    creds = obtener_credenciales()
+    if creds:
+        client = gspread.authorize(creds)
+        return client
+    return None
+
+def conectar_drive():
+    creds = obtener_credenciales()
+    if creds:
+        service = build('drive', 'v3', credentials=creds)
+        return service
+    return None
+
+# --- FUNCIÓN: SUBIR IMAGEN A GOOGLE DRIVE (PERSISTENTE) ---
+def subir_imagen_drive(uploaded_file, nombre_archivo):
+    """Sube la imagen a Drive y devuelve un Link público para verla"""
+    if uploaded_file is None: return "No"
     
     try:
-        sh = client.open(SHEET_NAME)
-        wk = sh.worksheet("Inventario")
-        data = wk.get_all_records()
+        service = conectar_drive()
+        if not service: return "Error Conexión Drive"
         
-        if not data:
-            return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta", "Ganancia"])
-            
-        df = pd.DataFrame(data)
+        # 1. Crear metadata del archivo
+        file_metadata = {'name': nombre_archivo}
         
-        # Limpieza de tipos
-        cols_texto = ['Grado', 'Area', 'Libro']
-        for col in cols_texto:
-            if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
+        # 2. Preparar el contenido (Bytes)
+        media = MediaIoBaseUpload(uploaded_file, mimetype=uploaded_file.type)
         
-        return df
+        # 3. Subir archivo
+        file = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webContentLink'
+        ).execute()
+        
+        file_id = file.get('id')
+        
+        # 4. Hacer el archivo "Público" (Reader) para que la App pueda mostrarlo
+        # (Esto es necesario para que st.image pueda leer la URL)
+        permission = {'type': 'anyone', 'role': 'reader'}
+        service.permissions().create(fileId=file_id, body=permission).execute()
+        
+        # 5. Retornar el link directo de descarga/visualización
+        return file.get('webContentLink')
+        
     except Exception as e:
-        st.error(f"Error leyendo Inventario de Google: {e}")
-        return pd.DataFrame()
+        st.error(f"Error subiendo a Drive: {e}")
+        return "Error"
 
-def guardar_inventario(df):
-    """Sube el inventario a Google Sheets"""
-    client = conectar_google()
-    if not client: return
-    
+# --- FUNCIONES DE LIMPIEZA ---
+def limpiar_moneda(valor):
     try:
-        sh = client.open(SHEET_NAME)
-        wk = sh.worksheet("Inventario")
-        
-        # Calcular Ganancia antes de guardar
-        for col in ['Costo', 'Precio Venta']:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        df['Ganancia'] = df['Precio Venta'] - df['Costo']
-        
-        # Limpiar hoja y subir nuevos datos
-        wk.clear()
-        wk.update([df.columns.values.tolist()] + df.values.tolist())
-        st.cache_data.clear() # Limpiar caché local
-    except Exception as e:
-        st.error(f"Error guardando en Google: {e}")
+        if isinstance(valor, (int, float)): return float(valor)
+        valor_str = str(valor).strip()
+        if not valor_str: return 0.0
+        valor_str = valor_str.replace('$', '').replace(' ', '').replace(',', '')
+        return float(valor_str)
+    except: return 0.0
 
-def cargar_pedidos():
-    """Descarga los pedidos desde Google Sheets"""
-    client = conectar_google()
-    if not client: return pd.DataFrame()
-    
-    try:
-        sh = client.open(SHEET_NAME)
-        wk = sh.worksheet("Pedidos")
-        data = wk.get_all_records()
-        
-        if not data:
-            return pd.DataFrame(columns=[
-                "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", 
-                "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2", "Historial_Cambios"
-            ])
-        
-        df = pd.DataFrame(data)
-        # Asegurar ID como string
-        if 'ID_Pedido' in df.columns:
-            df['ID_Pedido'] = df['ID_Pedido'].astype(str)
-            
-        # Asegurar columnas faltantes si el Excel está viejo
-        if "Comprobante2" not in df.columns: df["Comprobante2"] = "No"
-            
-        return df
-    except Exception as e:
-        # Si la hoja no existe o está vacía
-        return pd.DataFrame(columns=[
-                "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", 
-                "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2", "Historial_Cambios"
-            ])
-
-def guardar_pedido_db(df):
-    """Sube la base de pedidos actualizada a Google Sheets"""
-    client = conectar_google()
-    if not client: return
-    
-    try:
-        sh = client.open(SHEET_NAME)
-        wk = sh.worksheet("Pedidos")
-        
-        # Asegurar que todo sea string/serializable para JSON
-        df = df.astype(str)
-        
-        wk.clear()
-        wk.update([df.columns.values.tolist()] + df.values.tolist())
-    except Exception as e:
-        st.error(f"Error guardando pedido en Google: {e}")
-
-# --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
     if not isinstance(texto, str): texto = str(texto)
     texto = texto.strip().lower()
@@ -160,44 +112,90 @@ def obtener_nuevo_id(df_pedidos):
     max_id = 0
     if not df_pedidos.empty:
         for pid in df_pedidos['ID_Pedido']:
-            # Limpiar posible basura en ID
             pid_clean = re.sub(r'\D', '', str(pid))
             if pid_clean.isdigit():
                 val = int(pid_clean)
-                if val > max_id:
-                    max_id = val
-    nuevo = max_id + 1
-    return f"{nuevo:04d}"
+                if val > max_id: max_id = val
+    return f"{max_id + 1:04d}"
 
-def guardar_archivo_soporte(uploaded_file, id_pedido, sufijo=""):
-    """Guarda imagen localmente (Volátil en Streamlit Cloud)"""
-    if uploaded_file is None:
-        return "No"
+# --- CRUD DATOS ---
+def cargar_inventario():
+    client = conectar_sheets()
+    if not client: return pd.DataFrame()
     try:
-        file_ext = uploaded_file.name.split('.')[-1]
-        nombre_final = f"{id_pedido}{sufijo}.{file_ext}"
-        ruta_completa = os.path.join(DIR_COMPROBANTES, nombre_final)
-        with open(ruta_completa, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        return nombre_final
+        sh = client.open(SHEET_NAME)
+        wk = sh.worksheet("Inventario")
+        data = wk.get_all_records()
+        if not data: return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta"])
+        df = pd.DataFrame(data)
+        
+        cols_texto = ['Grado', 'Area', 'Libro']
+        for col in cols_texto:
+            if col in df.columns: df[col] = df[col].astype(str).str.strip()
+            
+        if 'Precio Venta' in df.columns: df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
+        else: df['Precio Venta'] = 0.0
+        
+        if 'Costo' in df.columns: df['Costo'] = df['Costo'].apply(limpiar_moneda)
+        else: df['Costo'] = 0.0
+        
+        return df
     except Exception as e:
-        st.error(f"Error guardando imagen: {e}")
-        return "Error"
+        st.error(f"Error Inventario: {e}")
+        return pd.DataFrame()
 
+def guardar_inventario(df):
+    client = conectar_sheets()
+    if not client: return
+    try:
+        sh = client.open(SHEET_NAME)
+        wk = sh.worksheet("Inventario")
+        df['Costo'] = df['Costo'].apply(limpiar_moneda)
+        df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
+        df['Ganancia'] = df['Precio Venta'] - df['Costo']
+        wk.clear()
+        wk.update([df.columns.values.tolist()] + df.values.tolist())
+        st.cache_data.clear()
+    except Exception as e: st.error(f"Error guardando: {e}")
+
+def cargar_pedidos():
+    client = conectar_sheets()
+    if not client: return pd.DataFrame()
+    try:
+        sh = client.open(SHEET_NAME)
+        wk = sh.worksheet("Pedidos")
+        data = wk.get_all_records()
+        if not data: return pd.DataFrame(columns=["ID_Pedido", "Cliente", "Celular", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2"])
+        df = pd.DataFrame(data)
+        if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
+        if "Comprobante2" not in df.columns: df["Comprobante2"] = "No"
+        return df
+    except: return pd.DataFrame()
+
+def guardar_pedido_db(df):
+    client = conectar_sheets()
+    if not client: return
+    try:
+        sh = client.open(SHEET_NAME)
+        wk = sh.worksheet("Pedidos")
+        df = df.astype(str)
+        wk.clear()
+        wk.update([df.columns.values.tolist()] + df.values.tolist())
+    except Exception as e: st.error(f"Error guardando pedido: {e}")
+
+# --- COMPONENTES VISUALES ---
 def generar_link_whatsapp(celular, mensaje):
     celular = str(celular).replace(" ", "").replace("+", "").strip()
     if not celular.startswith("57"): celular = "57" + celular
-    texto_codificado = mensaje.replace(" ", "%20").replace("\n", "%0A")
-    return f"https://wa.me/{celular}?text={texto_codificado}"
+    return f"https://wa.me/{celular}?text={mensaje.replace(' ', '%20').replace(chr(10), '%0A')}"
 
-# --- GENERADOR EXCEL MATRIZ ---
 def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     output = io.BytesIO()
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
     workbook = writer.book
     worksheet = workbook.add_worksheet("Listado Matriz")
     
-    fmt_header = workbook.add_format({'bold': True, 'font_size': 14, 'bg_color': '#DDEBF7', 'border': 1})
+    fmt_header = workbook.add_format({'bold': True, 'bg_color': '#DDEBF7', 'border': 1})
     fmt_col = workbook.add_format({'bold': True, 'bg_color': '#FFF2CC', 'border': 1, 'align': 'center'})
     fmt_cell = workbook.add_format({'border': 1, 'align': 'center'})
     
@@ -208,7 +206,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
         
-        # Mapa legacy y Areas
         mapa_legacy = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
         areas = inv_grado['Area'].unique()
         patron = f"[{grado}]"
@@ -226,7 +223,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             for item in items:
                 if patron in item:
                     area_enc = None
-                    # Opción 1: Paréntesis
                     match = re.search(r'\((.*?)\)', item)
                     if match:
                         posible = match.group(1).strip()
@@ -234,11 +230,9 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
                             if str(a).strip().lower() == posible.lower():
                                 area_enc = a
                                 break
-                    # Opción 2: Legacy
                     if not area_enc:
                         raw = item.replace(patron, "").strip()
                         area_enc = mapa_legacy.get(normalizar_clave(raw))
-                    
                     if area_enc:
                         row[area_enc] = 1
                         count += 1
@@ -246,11 +240,9 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             data_rows.append(row)
 
         if not data_rows: continue
-
-        # Escribir Grado
-        worksheet.merge_range(current_row, 0, current_row, 4 + len(areas), f"GRADO: {grado}", fmt_header)
-        current_row += 1
         
+        worksheet.write(current_row, 0, f"GRADO: {grado}", fmt_header)
+        current_row += 1
         headers = ['Cliente', 'Celular', 'Total', 'Saldo'] + list(areas) + ['Cant']
         for i, h in enumerate(headers): worksheet.write(current_row, i, h, fmt_col)
         current_row += 1
@@ -265,18 +257,14 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
                 worksheet.write(current_row, 4+i, val if val > 0 else "", fmt_cell)
             worksheet.write(current_row, 4+len(areas), d['Cant'], fmt_cell)
             current_row += 1
-        
         current_row += 2
-
     writer.close()
     return output
 
-# --- COMPONENTE SELECCIÓN ---
 def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, reset_counter=0):
     grados = inventario['Grado'].unique()
     seleccion = []
     total = 0
-    
     for grado in grados:
         df_g = inventario[inventario['Grado'] == grado]
         with st.expander(f"{grado}"):
@@ -284,7 +272,7 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 key = f"{grado}_{r['Area']}_{r['Libro']}_{key_suffix}_{reset_counter}"
                 nombre = str(r['Libro']).strip()
                 area = str(r['Area']).strip()
-                precio = float(r['Precio Venta']) if r['Precio Venta'] else 0
+                precio = r['Precio Venta']
                 
                 label = f"{area} - {nombre} (${int(precio):,})"
                 item_new = f"[{grado}] ({area}) {nombre}"
@@ -299,28 +287,20 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                     total += precio
     return seleccion, total
 
-# --- RENDERIZADO MATRIZ LECTURA ---
 def renderizar_matriz_lectura(fila, inventario):
     st.markdown(f"**Pedido:** {fila['ID_Pedido']} | **Fecha:** {fila['Fecha_Creacion']}")
     c1, c2, c3 = st.columns(3)
-    
-    # Conversión segura a float para visualización
-    try: tot = float(fila['Total'])
-    except: tot = 0
-    try: abo = float(fila['Abonado'])
-    except: abo = 0
-    try: sal = float(fila['Saldo'])
-    except: sal = 0
+    tot = limpiar_moneda(fila.get('Total', 0))
+    abo = limpiar_moneda(fila.get('Abonado', 0))
+    sal = limpiar_moneda(fila.get('Saldo', 0))
 
     c1.metric("Total", f"${tot:,.0f}")
     c2.metric("Abonado", f"${abo:,.0f}")
     c3.metric("Saldo", f"${sal:,.0f}", delta_color="inverse")
     
-    # Matriz
     detalles = str(fila['Detalle'])
     items = detalles.split(" | ")
     libros_grado = {}
-    
     for item in items:
         match = re.search(r'\[(.*?)\]', item)
         if match:
@@ -346,31 +326,30 @@ def renderizar_matriz_lectura(fila, inventario):
                 if area_enc: data[area_enc] = ["✅"]
             st.table(pd.DataFrame(data))
 
-    # Soportes
     st.markdown("**📂 Soportes Adjuntos:**")
     cs1, cs2 = st.columns(2)
     s1 = str(fila.get('Comprobante', 'No'))
     s2 = str(fila.get('Comprobante2', 'No'))
     
     with cs1:
-        if s1 not in ['No', 'Manual/Presencial', 'nan']:
-            ruta1 = os.path.join(DIR_COMPROBANTES, s1)
-            if os.path.exists(ruta1): st.image(ruta1, width=150, caption="Soporte 1")
-            else: st.warning("Imagen no disponible (Reiniciado)")
+        if s1.startswith("http"):
+            st.image(s1, width=200, caption="Soporte 1 (Drive)")
+        elif s1 not in ['No', 'Manual', 'Manual/Presencial', 'nan']:
+            st.warning("Imagen local expiró. Subir de nuevo.")
         else: st.info("Sin soporte inicial")
         
     with cs2:
-        if s2 not in ['No', 'nan']:
-            ruta2 = os.path.join(DIR_COMPROBANTES, s2)
-            if os.path.exists(ruta2): st.image(ruta2, width=150, caption="Soporte 2")
-            else: st.info("-")
+        if s2.startswith("http"):
+            st.image(s2, width=200, caption="Soporte 2 (Drive)")
+        elif s2 not in ['No', 'nan']:
+            st.warning("Imagen local expiró.")
+        else: st.info("-")
     st.divider()
 
-# --- VISTA FORMULARIO CLIENTE ---
 def formulario_pedido(pedido_id):
     inventario = cargar_inventario()
     if inventario.empty:
-        st.error("⚠️ Error: No se pudo conectar al Inventario en Google Sheets.")
+        st.error("⚠️ Error conectando a Google Sheets.")
         return
 
     datos = {}
@@ -400,7 +379,7 @@ def formulario_pedido(pedido_id):
     st.subheader("Pagos y Soportes")
     tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"], horizontal=True)
     
-    prev_abo = float(datos.get('Abonado', 0))
+    prev_abo = limpiar_moneda(datos.get('Abonado', 0))
     if es_modif: st.write(f"**Abonado Previo:** ${prev_abo:,.0f}")
     
     new_abo = st.number_input("Valor a transferir HOY:", min_value=0.0, step=1000.0)
@@ -410,10 +389,8 @@ def formulario_pedido(pedido_id):
     if es_modif:
         st.markdown("**📂 Soporte 1 (Solo Lectura):**")
         s1 = str(datos.get('Comprobante', 'No'))
-        if s1 not in ['No', 'Manual/Presencial', 'nan']:
-            p = os.path.join(DIR_COMPROBANTES, s1)
-            if os.path.exists(p): st.image(p, width=200)
-            else: st.warning("Imagen no disponible en servidor")
+        if s1.startswith("http"): st.image(s1, width=200)
+        elif s1 not in ['No', 'Manual/Presencial']: st.warning("Imagen antigua expirada")
         else: st.info("No hay soporte inicial")
         
         st.markdown("**📂 Cargar Soporte 2 (Si abona hoy):**")
@@ -424,7 +401,7 @@ def formulario_pedido(pedido_id):
     
     st.write("---")
     if st.button("✅ CONFIRMAR Y GUARDAR"):
-        with st.spinner("Guardando en Google Sheets..."):
+        with st.spinner("Subiendo a Google Drive y Guardando..."):
             acumulado = prev_abo + new_abo
             
             if not nom or not cel: st.error("Faltan datos personales")
@@ -438,17 +415,22 @@ def formulario_pedido(pedido_id):
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 saldo = total - acumulado
                 
-                if es_modif:
-                    curr_id = str(pedido_id)
-                else:
-                    curr_id = obtener_nuevo_id(df_ped)
+                if es_modif: curr_id = str(pedido_id)
+                else: curr_id = obtener_nuevo_id(df_ped)
                 
-                # Gestión de Archivos (Local)
+                # --- SUBIDA A DRIVE ---
                 n_f1 = datos.get('Comprobante', 'No')
                 n_f2 = datos.get('Comprobante2', 'No')
                 
-                if f1: n_f1 = guardar_archivo_soporte(f1, curr_id)
-                if f2: n_f2 = guardar_archivo_soporte(f2, curr_id, "_2")
+                if f1:
+                    link1 = subir_imagen_drive(f1, f"PED-{curr_id}-SOP1")
+                    if link1 != "Error": n_f1 = link1
+                    else: st.error("Falló la subida a Drive (Soporte 1)")
+
+                if f2:
+                    link2 = subir_imagen_drive(f2, f"PED-{curr_id}-SOP2")
+                    if link2 != "Error": n_f2 = link2
+                    else: st.error("Falló la subida a Drive (Soporte 2)")
                 
                 hist = datos.get('Historial_Cambios', 'Original')
                 if es_modif: hist += f" | Modif: {fecha}"
@@ -461,25 +443,18 @@ def formulario_pedido(pedido_id):
                     "Comprobante": n_f1, "Comprobante2": n_f2, "Historial_Cambios": hist
                 }
                 
-                # Actualizar DF
                 if es_modif:
                     idx = df_ped[df_ped['ID_Pedido'] == curr_id].index
                     if not idx.empty:
-                        # Actualizar fila existente
-                        for k, v in nuevo_registro.items():
-                            df_ped.at[idx[0], k] = v
+                        for k, v in nuevo_registro.items(): df_ped.at[idx[0], k] = v
                 else:
-                    # Nueva fila
                     df_ped = pd.concat([df_ped, pd.DataFrame([nuevo_registro])], ignore_index=True)
                 
-                # GUARDAR EN GOOGLE
                 guardar_pedido_db(df_ped)
-                
                 st.session_state.exito_cliente = True
                 st.session_state.ultimo_pedido_cliente = curr_id
                 st.rerun()
 
-# --- VISTA CLIENTE PRINCIPAL ---
 def vista_cliente(pid_param=None):
     if pid_param:
         formulario_pedido(pid_param)
@@ -504,10 +479,10 @@ def vista_cliente(pid_param=None):
                 clean = limpiar_numero(b)
                 df['cc'] = df['Celular'].apply(limpiar_numero)
                 res = df[df['cc'] == clean]
-                
                 if res.empty: st.error("No encontrado")
                 else:
-                    pends = res[pd.to_numeric(res['Saldo'], errors='coerce') > 0]
+                    res['Saldo_Num'] = res['Saldo'].apply(limpiar_moneda)
+                    pends = res[res['Saldo_Num'] > 0]
                     if not pends.empty:
                         st.info(f"Tienes {len(pends)} pedidos pendientes:")
                         for _, r in pends.iterrows(): renderizar_matriz_lectura(r, inv)
@@ -524,8 +499,8 @@ def vista_cliente(pid_param=None):
             df = cargar_pedidos()
             clean = limpiar_numero(b)
             df['cc'] = df['Celular'].apply(limpiar_numero)
-            # Filtrar solo saldo positivo
-            pends = df[(df['cc'] == clean) & (pd.to_numeric(df['Saldo'], errors='coerce') > 0)]
+            df['Saldo_Num'] = df['Saldo'].apply(limpiar_moneda)
+            pends = df[(df['cc'] == clean) & (df['Saldo_Num'] > 0)]
             
             if pends.empty: st.info("No tienes deudas pendientes.")
             else:
@@ -535,7 +510,6 @@ def vista_cliente(pid_param=None):
                     st.divider()
                     formulario_pedido(opts[sel])
 
-# --- VISTA ÉXITO ---
 def vista_exito(pid):
     st.balloons()
     st.success("¡Pedido Guardado en la Nube Exitosamente!")
@@ -543,44 +517,33 @@ def vista_exito(pid):
     inv = cargar_inventario()
     row = df[df['ID_Pedido'] == str(pid)]
     if not row.empty: renderizar_matriz_lectura(row.iloc[0], inv)
-    
     st.divider()
     if st.button("⬅️ Inicio"):
         st.session_state.exito_cliente = False
         st.rerun()
 
-# --- VISTA ADMIN MODIFICADA ---
 def vista_admin():
     url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
     menu = st.sidebar.radio("Ir a:", ["📊 Ventas", "📦 Inventario"])
     
-    # --- SECCIÓN INVENTARIO SIMPLIFICADA (SIN UPLOAD) ---
     if menu == "📦 Inventario":
         st.title("📦 Inventario en Nube (Google Sheets)")
         st.info("ℹ️ Para agregar o modificar libros, edita directamente tu archivo 'DB_Libros_Escolares' en Google Drive.")
-        
         df = cargar_inventario()
         if not df.empty:
-            # Edición rápida de precios
             df_ed = st.data_editor(df, num_rows="dynamic", use_container_width=True)
             if st.button("💾 Guardar Cambios Rápidos"):
                 guardar_inventario(df_ed)
-                st.success("¡Inventario actualizado en Google Sheets!")
+                st.success("¡Inventario actualizado!")
                 st.rerun()
-                
             st.divider()
             try:
-                df['Costo'] = pd.to_numeric(df['Costo'], errors='coerce').fillna(0)
-                df['Precio Venta'] = pd.to_numeric(df['Precio Venta'], errors='coerce').fillna(0)
                 df['Ganancia'] = df['Precio Venta'] - df['Costo']
                 res = df.groupby("Grado")[["Costo", "Precio Venta", "Ganancia"]].sum()
-                st.subheader("💰 Resumen Financiero por Grado")
                 st.dataframe(res, use_container_width=True)
             except: pass
-        else:
-            st.warning("⚠️ Tu inventario en Google Sheets está vacío o no se pudo leer.")
+        else: st.warning("Inventario vacío.")
 
-    # --- SECCIÓN VENTAS ---
     elif menu == "📊 Ventas":
         st.title("📊 Panel Ventas (Google Sheets)")
         df = cargar_pedidos()
@@ -589,12 +552,10 @@ def vista_admin():
         with c1:
             tel = st.text_input("WhatsApp Cliente:")
             if tel: st.link_button("Enviar Link", generar_link_whatsapp(tel, f"Hola, pide aquí: {url_app}?rol=cliente"))
-        with c2:
-            st.code(f"{url_app}?rol=cliente", language="text")
+        with c2: st.code(f"{url_app}?rol=cliente", language="text")
             
         st.divider()
-        # Pedido Manual Admin
-        with st.expander("➕ Registrar Pedido Manual (Presencial)"):
+        with st.expander("➕ Pedido Manual"):
             st.caption("Usa esto si un padre está contigo en persona.")
             inv = cargar_inventario()
             if not inv.empty:
@@ -625,17 +586,15 @@ def vista_admin():
 
         st.divider()
         st.subheader("Listado")
-        
         inv_act = cargar_inventario()
         if not df.empty and not inv_act.empty:
             excel = generar_excel_matriz_bytes(df, inv_act)
-            st.download_button("📥 Descargar Reporte Matriz", excel, "Reporte_Matriz.xlsx")
+            st.download_button("📥 Descargar Reporte", excel, "Reporte_Matriz.xlsx")
             
         filtro = st.text_input("Buscar Pedido:")
         df_view = df
         if filtro: df_view = df[df['Cliente'].str.contains(filtro, case=False, na=False)]
         
-        # Editor Admin
         edited = st.data_editor(
             df_view,
             column_config={
@@ -655,20 +614,20 @@ def vista_admin():
                     if df.loc[mask, 'Estado'].values[0] != row['Estado']:
                         df.loc[mask, 'Estado'] = row['Estado']
                         cambios = True
-                    if float(df.loc[mask, 'Saldo'].values[0]) != float(row['Saldo']):
+                    saldo_original = limpiar_moneda(df.loc[mask, 'Saldo'].values[0])
+                    saldo_nuevo = limpiar_moneda(row['Saldo'])
+                    if saldo_original != saldo_nuevo:
                          df.loc[mask, 'Saldo'] = row['Saldo']
                          cambios = True
             if cambios:
                 guardar_pedido_db(df)
-                st.success("Guardado en Google Sheets")
+                st.success("Guardado")
             else: st.info("Sin cambios")
             
-        # Gestión Individual
         st.divider()
         st.subheader("Gestión Detallada")
         opts = df['ID_Pedido'] + " - " + df['Cliente']
-        # Filtro para selectbox
-        bf = st.text_input("Filtrar lista:", placeholder="ID o Nombre...")
+        bf = st.text_input("Filtrar:", placeholder="ID o Nombre...")
         if bf: opts = opts[opts.str.contains(bf, case=False, na=False)]
         
         sel_g = st.selectbox("Seleccionar:", opts)
@@ -679,36 +638,28 @@ def vista_admin():
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.caption("Soporte 1")
-                s1 = row_sel.get('Comprobante', 'No')
-                if s1 not in ['No', 'Manual', 'Manual/Presencial', 'nan']:
-                    if os.path.exists(os.path.join(DIR_COMPROBANTES, s1)):
-                        st.image(os.path.join(DIR_COMPROBANTES, s1))
-                    else: st.warning("No imagen")
+                s1 = str(row_sel.get('Comprobante', 'No'))
+                if s1.startswith("http"): st.image(s1, width=200, caption="Drive")
+                else: st.info("Sin imagen online")
             with c2:
                 st.caption("Soporte 2")
-                s2 = row_sel.get('Comprobante2', 'No')
-                if s2 not in ['No', 'nan']:
-                    if os.path.exists(os.path.join(DIR_COMPROBANTES, s2)):
-                        st.image(os.path.join(DIR_COMPROBANTES, s2))
+                s2 = str(row_sel.get('Comprobante2', 'No'))
+                if s2.startswith("http"): st.image(s2, width=200, caption="Drive")
+                else: st.info("-")
             with c3:
-                st.caption("Acciones")
                 if st.button("🗑️ ELIMINAR PEDIDO", type="primary"):
                     df = df[df['ID_Pedido'] != id_sel]
                     guardar_pedido_db(df)
                     st.success("Eliminado")
                     st.rerun()
 
-# --- ROUTER ---
 qp = st.query_params
 rol = qp.get("rol")
-
 if rol == "cliente":
     if st.session_state.exito_cliente and st.session_state.ultimo_pedido_cliente:
         vista_exito(st.session_state.ultimo_pedido_cliente)
-    else:
-        vista_cliente(qp.get("pedido_id"))
+    else: vista_cliente(qp.get("pedido_id"))
 else:
-    # LOGIN ADMIN
     if not st.session_state.admin_autenticado:
         st.markdown("<br><br>", unsafe_allow_html=True)
         _, c, _ = st.columns([1,2,1])
