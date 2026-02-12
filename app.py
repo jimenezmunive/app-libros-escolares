@@ -39,7 +39,7 @@ def limpiar_moneda(valor):
     except:
         return 0.0
 
-# --- FUNCIÓN: SUBIR IMAGEN A IMGBB (CORREGIDA PARA VISUALIZACIÓN) ---
+# --- FUNCIÓN: SUBIR IMAGEN A IMGBB ---
 def subir_imagen_imgbb(uploaded_file):
     if uploaded_file is None: return "No"
     try:
@@ -53,14 +53,12 @@ def subir_imagen_imgbb(uploaded_file):
             "key": api_key,
             "expiration": 15552000 # 6 meses
         }
-        # Enviar nombre de archivo para mejor gestión
         files = {"image": (uploaded_file.name, uploaded_file.getvalue())}
         
         response = requests.post(url, data=payload, files=files)
         resultado = response.json()
         
         if resultado["success"]:
-            # CAMBIO CLAVE: Usamos 'display_url' o 'url' asegurando que sea directo
             return resultado["data"]["url"] 
         else:
             st.error(f"Error ImgBB: {resultado.get('error', {}).get('message')}")
@@ -175,10 +173,13 @@ def cargar_pedidos():
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Pedidos")
         data = wk.get_all_records()
-        if not data: return pd.DataFrame(columns=["ID_Pedido", "Cliente", "Celular", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2"])
+        if not data: return pd.DataFrame(columns=["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2"])
         df = pd.DataFrame(data)
         if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
         if "Comprobante2" not in df.columns: df["Comprobante2"] = "No"
+        # Asegurar columnas de fecha
+        if "Fecha_Creacion" not in df.columns: df["Fecha_Creacion"] = ""
+        if "Ultima_Modificacion" not in df.columns: df["Ultima_Modificacion"] = ""
         return df
     except: return pd.DataFrame()
 
@@ -221,7 +222,14 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
 
         data_rows = []
         for _, p in pedidos_grado.iterrows():
-            row = {'Cliente': p['Cliente'], 'Celular': p['Celular'], 'Total': p['Total'], 'Saldo': p['Saldo']}
+            row = {
+                'Cliente': p['Cliente'], 
+                'Fecha_Creacion': p.get('Fecha_Creacion', ''),
+                'Ultima_Modificacion': p.get('Ultima_Modificacion', ''),
+                'Celular': p['Celular'], 
+                'Total': p['Total'], 
+                'Saldo': p['Saldo']
+            }
             for a in areas: row[a] = 0
             items = str(p['Detalle']).split(" | ")
             count = 0
@@ -244,20 +252,25 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
             row['Cant'] = count
             data_rows.append(row)
         if not data_rows: continue
+        
         worksheet.write(current_row, 0, f"GRADO: {grado}", fmt_header)
         current_row += 1
-        headers = ['Cliente', 'Celular', 'Total', 'Saldo'] + list(areas) + ['Cant']
+        
+        # HEADERS ACTUALIZADOS CON FECHAS
+        headers = ['Cliente', 'Fecha Creación', 'Últ. Modif', 'Celular', 'Total', 'Saldo'] + list(areas) + ['Cant']
         for i, h in enumerate(headers): worksheet.write(current_row, i, h, fmt_col)
         current_row += 1
         for d in data_rows:
             worksheet.write(current_row, 0, d['Cliente'], fmt_cell)
-            worksheet.write(current_row, 1, d['Celular'], fmt_cell)
-            worksheet.write(current_row, 2, d['Total'], fmt_cell)
-            worksheet.write(current_row, 3, d['Saldo'], fmt_cell)
+            worksheet.write(current_row, 1, d['Fecha_Creacion'], fmt_cell)
+            worksheet.write(current_row, 2, d['Ultima_Modificacion'], fmt_cell)
+            worksheet.write(current_row, 3, d['Celular'], fmt_cell)
+            worksheet.write(current_row, 4, d['Total'], fmt_cell)
+            worksheet.write(current_row, 5, d['Saldo'], fmt_cell)
             for i, a in enumerate(areas):
                 val = d[a]
-                worksheet.write(current_row, 4+i, val if val > 0 else "", fmt_cell)
-            worksheet.write(current_row, 4+len(areas), d['Cant'], fmt_cell)
+                worksheet.write(current_row, 6+i, val if val > 0 else "", fmt_cell)
+            worksheet.write(current_row, 6+len(areas), d['Cant'], fmt_cell)
             current_row += 1
         current_row += 2
     writer.close()
@@ -332,7 +345,6 @@ def renderizar_matriz_lectura(fila, inventario):
     s2 = str(fila.get('Comprobante2', 'No'))
     
     with cs1:
-        # Se elimina width fijo para que se adapte
         if s1.startswith("http"): st.image(s1, caption="Soporte 1", use_container_width=True)
         elif s1 not in ['No', 'Manual', 'Manual/Presencial', 'nan']: st.warning("Imagen no disponible")
         else: st.info("Sin soporte inicial")
@@ -375,29 +387,37 @@ def formulario_pedido(pedido_id):
     cm.metric("Total a Pagar", f"${total:,.0f}")
     if cb.button("🔄 Actualizar Precio"): pass
     
-    # --- SECCIÓN DE PAGO CORREGIDA (UI NEQUI) ---
+    # --- SECCIÓN DE PAGO (NEQUI MOVIDO ARRIBA) ---
     st.subheader("Pagos y Soportes")
     
-    col_metodo, col_nequi = st.columns([1, 1])
-    with col_metodo:
-        tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"])
-        
-    with col_nequi:
-        # Recuadro Sombreado Automático (Color Inherit)
+    # Recuadro Nequi Pequeño y Sutil
+    st.markdown(f"""
+    <div style="
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        border-radius: 6px;
+        padding: 8px 12px;
+        margin-bottom: 15px;
+        background-color: rgba(128, 128, 128, 0.08);
+        color: inherit;
+        width: fit-content;
+        font-size: 0.9em;">
+        <span style="font-weight: bold; margin-right: 10px;">📱 Cuenta Nequi:</span>
+        <span style="font-family: monospace; font-size: 1.1em;">{nequi_num}</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"])
+    
+    # --- BLOQUE DEUDA UNIFICADO ---
+    prev_abo = limpiar_moneda(datos.get('Abonado', 0))
+    saldo_pend = total - prev_abo
+    if es_modif:
         st.markdown(f"""
-        <div style="
-            border: 1px solid rgba(128, 128, 128, 0.3);
-            border-radius: 8px;
-            padding: 15px;
-            background-color: rgba(128, 128, 128, 0.1);
-            color: inherit;">
-            <div style="font-weight: bold; margin-bottom: 5px;">📱 Cuenta Nequi:</div>
-            <div style="font-size: 1.5em; letter-spacing: 1px; font-family: monospace;">{nequi_num}</div>
+        <div style="margin-top: 10px; margin-bottom: 15px; line-height: 1.4;">
+            <div><strong>Abono Previo:</strong> ${prev_abo:,.0f}</div>
+            <div style="color: #d9534f;"><strong>Saldo Deuda:</strong> ${saldo_pend:,.0f}</div>
         </div>
         """, unsafe_allow_html=True)
-    
-    prev_abo = limpiar_moneda(datos.get('Abonado', 0))
-    if es_modif: st.write(f"**Abonado Previo:** ${prev_abo:,.0f}")
     
     new_abo = st.number_input("Valor a transferir HOY:", min_value=0.0, step=1000.0)
     st.caption("ℹ️ Nota: El valor será validado administrativamente.")
@@ -439,7 +459,6 @@ def formulario_pedido(pedido_id):
                 
                 error_subida = False
                 
-                # SUBIDA A IMGBB
                 if f1:
                     link1 = subir_imagen_imgbb(f1)
                     if link1.startswith("http"): n_f1 = link1
@@ -630,17 +649,41 @@ def vista_admin():
         vista_modo = st.radio("Modo de Visualización:", ["Vista Lista (Edición Rápida)", "Vista Matriz (Detallada)"], horizontal=True)
         
         if vista_modo == "Vista Lista (Edición Rápida)":
+            # --- REORDENAR COLUMNAS ---
+            cols_base = ["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Estado", "Total", "Saldo", "Celular"]
+            cols_extra = [c for c in df_view.columns if c not in cols_base]
+            df_view = df_view[cols_base + cols_extra]
+            
+            # --- FUNCIÓN DE ESTILO PARA MODIFICACIONES ---
+            def resaltar_modificaciones(row):
+                estilo = [''] * len(row)
+                try:
+                    # Si ultima modif es mayor (alfabéticamente la fecha ISO funciona) a creación
+                    if row['Ultima_Modificacion'] > row['Fecha_Creacion']:
+                        # Buscamos índice de la columna Ultima_Modificacion
+                        idx = row.index.get_loc('Ultima_Modificacion')
+                        estilo[idx] = 'background-color: #ffcccc; color: #8b0000; font-weight: bold;'
+                except: pass
+                return estilo
+
+            # Aplicamos estilo (Esto vuelve el dataframe de solo lectura visualmente)
+            st.caption("💡 Filas con 'Última Modificación' resaltada en rojo han sido editadas.")
+            
+            # Streamlit Data Editor no soporta conditional formatting celda a celda nativo fácilmente
+            # Usamos dataframe estilizado para VISUALIZAR alertas
+            st.dataframe(df_view.style.apply(resaltar_modificaciones, axis=1), use_container_width=True)
+            
+            st.markdown("**Editar Estados:**")
+            # Editor simplificado solo para editar estados rápidamente sin conflictos visuales
             edited = st.data_editor(
-                df_view,
+                df_view[["ID_Pedido", "Cliente", "Estado", "Saldo"]],
                 column_config={
                     "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"]),
                     "ID_Pedido": st.column_config.TextColumn(disabled=True),
-                    "Detalle": st.column_config.TextColumn(disabled=True),
-                    "Total": st.column_config.NumberColumn(format="$%d"),
-                    "Saldo": st.column_config.NumberColumn(format="$%d")
                 },
-                hide_index=True, use_container_width=True
+                hide_index=True, use_container_width=True, key="editor_rapido"
             )
+            
             if st.button("💾 Guardar Cambios Estados"):
                 cambios = False
                 for idx, row in edited.iterrows():
@@ -649,6 +692,7 @@ def vista_admin():
                         if df.loc[mask, 'Estado'].values[0] != row['Estado']:
                             df.loc[mask, 'Estado'] = row['Estado']
                             cambios = True
+                        # Saldo también editable por si acaso
                         saldo_original = limpiar_moneda(df.loc[mask, 'Saldo'].values[0])
                         saldo_nuevo = limpiar_moneda(row['Saldo'])
                         if saldo_original != saldo_nuevo:
@@ -691,8 +735,11 @@ def vista_admin():
         bf = st.text_input("Filtrar Gestión:", placeholder="ID o Nombre...")
         if bf: opts = opts[opts.str.contains(bf, case=False, na=False)]
         
-        sel_g = st.selectbox("Seleccionar:", opts)
-        if sel_g:
+        # --- DROPDOWN CON OPCIÓN VACÍA POR DEFECTO ---
+        lista_clientes = ["-Selección del cliente-"] + list(opts)
+        sel_g = st.selectbox("Seleccionar:", lista_clientes)
+        
+        if sel_g and sel_g != "-Selección del cliente-":
             id_sel = sel_g.split(" - ")[0]
             row_sel = df[df['ID_Pedido'] == id_sel].iloc[0]
             
@@ -733,7 +780,5 @@ else:
                     st.rerun()
                 else: st.error("Incorrecto")
     else:
-        if st.sidebar.button("Salir"):
-            st.session_state.admin_autenticado = False
-            st.rerun()
+        # BOTÓN SALIR ELIMINADO SEGÚN REQUERIMIENTO
         vista_admin()
