@@ -2,19 +2,18 @@ import streamlit as st
 import pandas as pd
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 import json
 import os
 import io
 import unicodedata
 import re
+import requests
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Pedido de Ayuda Escolar", layout="wide", page_icon="📚")
 
-# --- CONFIGURACIÓN GOOGLE ---
+# --- CONFIGURACIÓN GOOGLE SHEETS ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -22,98 +21,21 @@ SCOPES = [
 
 SHEET_NAME = "DB_Libros_Escolares"
 
-# ---------------------------------------------------------
-# 🆔 ID DE TU CARPETA DE GOOGLE DRIVE (Ya insertado)
-ID_CARPETA_DRIVE = "1CfTrpHzp8L6dShFbWONfjOdE3c6sif-b"
-# ---------------------------------------------------------
-
 # --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
 if 'exito_cliente' not in st.session_state: st.session_state.exito_cliente = False
 if 'ultimo_pedido_cliente' not in st.session_state: st.session_state.ultimo_pedido_cliente = None
 if 'admin_autenticado' not in st.session_state: st.session_state.admin_autenticado = False
 
-# --- CONEXIÓN ROBUSTA (SHEETS + DRIVE) ---
-@st.cache_resource
-def obtener_credenciales():
-    try:
-        json_str = st.secrets["google_json"]
-        creds_dict = json.loads(json_str)
-        return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    except Exception as e:
-        st.error(f"Error Credenciales (Revisar Secrets): {e}")
-        return None
-
-def conectar_sheets():
-    creds = obtener_credenciales()
-    if creds:
-        client = gspread.authorize(creds)
-        return client
-    return None
-
-def conectar_drive():
-    creds = obtener_credenciales()
-    if creds:
-        service = build('drive', 'v3', credentials=creds)
-        return service
-    return None
-
-# --- FUNCIÓN: SUBIR IMAGEN A CARPETA ESPECÍFICA (SOLUCIÓN CUOTA) ---
-def subir_imagen_drive(uploaded_file, nombre_archivo):
-    """Sube la imagen a la carpeta compartida del usuario para evitar error de cuota"""
-    if uploaded_file is None: return "No"
-    
-    # Validación de seguridad
-    if not ID_CARPETA_DRIVE or "PEGAR_AQUI" in ID_CARPETA_DRIVE:
-        st.error("⚠️ ERROR CRÍTICO: No has configurado el ID_CARPETA_DRIVE en el código Python.")
-        return "Error"
-
-    try:
-        service = conectar_drive()
-        if not service: return "Error Conexión Drive"
-        
-        # 1. Metadata con PARENT FOLDER (Esto arregla el error 403 Storage Quota)
-        file_metadata = {
-            'name': nombre_archivo,
-            'parents': [ID_CARPETA_DRIVE] 
-        }
-        
-        # 2. Contenido
-        media = MediaIoBaseUpload(uploaded_file, mimetype=uploaded_file.type)
-        
-        # 3. Subir
-        file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id'
-        ).execute()
-        
-        file_id = file.get('id')
-        
-        # 4. Hacer público (Reader) para visualización
-        permission = {'type': 'anyone', 'role': 'reader'}
-        service.permissions().create(fileId=file_id, body=permission).execute()
-        
-        # 5. RETORNAR ENLACE DE VISUALIZACIÓN
-        return f"https://drive.google.com/uc?export=view&id={file_id}"
-        
-    except Exception as e:
-        st.error(f"Error subiendo a Drive: {e}")
-        return "Error"
-
-# --- FUNCIONES DE LIMPIEZA (BLINDAJE DE ERRORES) ---
+# --- FUNCIÓN: LIMPIEZA DE PRECIOS (BLINDAJE CONTRA ERRORES) ---
 def limpiar_moneda(valor):
-    """Convierte cualquier cosa a float de forma segura. Evita ValueError."""
+    """Convierte cualquier texto a numero. Si falla, devuelve 0. Evita pantalla negra."""
     try:
-        # Si ya es número, devolverlo
-        if isinstance(valor, (int, float)): 
-            return float(valor)
+        if pd.isna(valor) or str(valor).strip() == "": return 0.0
+        if isinstance(valor, (int, float)): return float(valor)
         
-        if pd.isna(valor) or valor == "": 
-            return 0.0
-        
+        # Limpiar texto
         valor_str = str(valor).strip()
-        # Eliminar símbolos comunes
         valor_str = valor_str.replace('$', '').replace(' ', '').replace(',', '')
         
         if not valor_str: return 0.0
@@ -121,6 +43,54 @@ def limpiar_moneda(valor):
     except:
         return 0.0
 
+# --- FUNCIÓN: SUBIR IMAGEN A IMGBB (SOLUCIÓN DEFINITIVA) ---
+def subir_imagen_imgbb(uploaded_file):
+    """Sube la imagen a la nube gratuita de ImgBB"""
+    if uploaded_file is None: return "No"
+    
+    try:
+        # Buscamos la llave en Secrets
+        api_key = st.secrets.get("IMGBB_KEY")
+        if not api_key:
+            st.error("⚠️ Falta configurar IMGBB_KEY en los Secrets de Streamlit.")
+            return "Error Config"
+
+        url = "https://api.imgbb.com/1/upload"
+        payload = {
+            "key": api_key,
+            "expiration": 15552000 # La imagen dura 6 meses (opcional)
+        }
+        files = {
+            "image": uploaded_file.getvalue()
+        }
+        
+        response = requests.post(url, data=payload, files=files)
+        resultado = response.json()
+        
+        if resultado["success"]:
+            return resultado["data"]["url"]
+        else:
+            st.error(f"Error ImgBB: {resultado.get('error', {}).get('message')}")
+            return "Error Subida"
+            
+    except Exception as e:
+        st.error(f"Error conectando a ImgBB: {e}")
+        return "Error Conexión"
+
+# --- CONEXIÓN GOOGLE SHEETS ---
+@st.cache_resource
+def conectar_sheets():
+    try:
+        json_str = st.secrets["google_json"]
+        creds_dict = json.loads(json_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+        client = gspread.authorize(creds)
+        return client
+    except Exception as e:
+        st.error(f"Error conectando a Google Sheets: {e}")
+        return None
+
+# --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
     if not isinstance(texto, str): texto = str(texto)
     texto = texto.strip().lower()
@@ -156,7 +126,7 @@ def cargar_inventario():
         for col in cols_texto:
             if col in df.columns: df[col] = df[col].astype(str).str.strip()
         
-        # Limpieza forzosa al cargar (Evita errores futuros)
+        # BLINDAJE: Limpieza forzosa al cargar
         if 'Precio Venta' in df.columns:
             df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
         else:
@@ -178,7 +148,6 @@ def guardar_inventario(df):
     try:
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Inventario")
-        # Asegurar números antes de guardar
         df['Costo'] = df['Costo'].apply(limpiar_moneda)
         df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
         df['Ganancia'] = df['Precio Venta'] - df['Costo']
@@ -302,7 +271,7 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 nombre = str(r['Libro']).strip()
                 area = str(r['Area']).strip()
                 
-                # --- CORRECCIÓN CRÍTICA DE VALOR ---
+                # BLINDAJE: Usamos limpiar_moneda para evitar ValueError
                 precio = limpiar_moneda(r['Precio Venta'])
                 
                 label = f"{area} - {nombre} (${int(precio):,})"
@@ -364,12 +333,12 @@ def renderizar_matriz_lectura(fila, inventario):
     
     with cs1:
         if s1.startswith("http"):
-            st.image(s1, width=200, caption="Soporte 1 (Drive)")
+            st.image(s1, width=200, caption="Soporte 1")
         else: st.info("Sin imagen Online")
         
     with cs2:
         if s2.startswith("http"):
-            st.image(s2, width=200, caption="Soporte 2 (Drive)")
+            st.image(s2, width=200, caption="Soporte 2")
         else: st.info("-")
     st.divider()
 
@@ -427,7 +396,7 @@ def formulario_pedido(pedido_id):
     
     st.write("---")
     if st.button("✅ CONFIRMAR Y GUARDAR"):
-        with st.spinner("Subiendo a Google Drive y Guardando..."):
+        with st.spinner("Subiendo Imagen y Guardando..."):
             acumulado = prev_abo + new_abo
             
             if not nom or not cel: st.error("Faltan datos personales")
@@ -449,18 +418,19 @@ def formulario_pedido(pedido_id):
                 
                 error_subida = False
                 
+                # SUBIDA A IMGBB
                 if f1:
-                    link1 = subir_imagen_drive(f1, f"PED-{curr_id}-SOP1")
+                    link1 = subir_imagen_imgbb(f1)
                     if link1.startswith("http"): n_f1 = link1
                     else: error_subida = True
                 
                 if f2:
-                    link2 = subir_imagen_drive(f2, f"PED-{curr_id}-SOP2")
+                    link2 = subir_imagen_imgbb(f2)
                     if link2.startswith("http"): n_f2 = link2
                     else: error_subida = True
                 
                 if error_subida:
-                    st.error("❌ Error subiendo imágenes a Drive. Verifica permisos y el ID de carpeta.")
+                    st.error("❌ Error subiendo imagen. Revisa tu IMGBB_KEY en Secrets.")
                 else:
                     hist = datos.get('Historial_Cambios', 'Original')
                     if es_modif: hist += f" | Modif: {fecha}"
@@ -705,12 +675,12 @@ def vista_admin():
             with c1:
                 st.caption("Soporte 1")
                 s1 = str(row_sel.get('Comprobante', 'No'))
-                if s1.startswith("http"): st.image(s1, width=200, caption="Drive")
+                if s1.startswith("http"): st.image(s1, width=200, caption="Soporte 1")
                 else: st.info("Sin imagen Online")
             with c2:
                 st.caption("Soporte 2")
                 s2 = str(row_sel.get('Comprobante2', 'No'))
-                if s2.startswith("http"): st.image(s2, width=200, caption="Drive")
+                if s2.startswith("http"): st.image(s2, width=200, caption="Soporte 2")
                 else: st.info("-")
             with c3:
                 if st.button("🗑️ ELIMINAR PEDIDO", type="primary"):
