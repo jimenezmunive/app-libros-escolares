@@ -20,7 +20,6 @@ SCOPES = [
 ]
 
 SHEET_NAME = "DB_Libros_Escolares"
-LOGO_NEQUI_URL = "https://seeklogo.com/images/N/nequi-logo-58F871E5B9-seeklogo.com.png" # Logo público estable
 
 # --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
@@ -40,7 +39,7 @@ def limpiar_moneda(valor):
     except:
         return 0.0
 
-# --- FUNCIÓN: SUBIR IMAGEN A IMGBB ---
+# --- FUNCIÓN: SUBIR IMAGEN A IMGBB (CORREGIDA PARA VISUALIZACIÓN) ---
 def subir_imagen_imgbb(uploaded_file):
     if uploaded_file is None: return "No"
     try:
@@ -52,13 +51,17 @@ def subir_imagen_imgbb(uploaded_file):
         url = "https://api.imgbb.com/1/upload"
         payload = {
             "key": api_key,
-            "expiration": 15552000 
+            "expiration": 15552000 # 6 meses
         }
-        files = {"image": uploaded_file.getvalue()}
+        # Enviar nombre de archivo para mejor gestión
+        files = {"image": (uploaded_file.name, uploaded_file.getvalue())}
+        
         response = requests.post(url, data=payload, files=files)
         resultado = response.json()
         
-        if resultado["success"]: return resultado["data"]["url"]
+        if resultado["success"]:
+            # CAMBIO CLAVE: Usamos 'display_url' o 'url' asegurando que sea directo
+            return resultado["data"]["url"] 
         else:
             st.error(f"Error ImgBB: {resultado.get('error', {}).get('message')}")
             return "Error Subida"
@@ -81,55 +84,34 @@ def conectar_sheets():
 
 # --- GESTIÓN DE CONFIGURACIÓN (NEQUI) ---
 def obtener_celular_nequi():
-    """Lee el número de Nequi desde la hoja 'Config'"""
     client = conectar_sheets()
     if not client: return "No configurado"
-    
     try:
         sh = client.open(SHEET_NAME)
-        # Intentamos abrir la hoja Config, si no existe, la creamos
-        try:
-            wk = sh.worksheet("Config")
+        try: wk = sh.worksheet("Config")
         except:
             wk = sh.add_worksheet(title="Config", rows=10, cols=2)
             wk.update([["Clave", "Valor"], ["celular_nequi", "3000000000"]])
             return "3000000000"
         
-        # Leemos el valor
         records = wk.get_all_records()
-        df_conf = pd.DataFrame(records)
-        
-        # Convertimos todo a string para evitar errores de tipo
-        df_conf = df_conf.astype(str)
-        
+        df_conf = pd.DataFrame(records).astype(str)
         res = df_conf[df_conf['Clave'] == 'celular_nequi']
-        if not res.empty:
-            return res.iloc[0]['Valor']
-        else:
-            return "3000000000"
-    except Exception as e:
-        return f"Error: {e}"
+        if not res.empty: return res.iloc[0]['Valor']
+        else: return "3000000000"
+    except: return "3000000000"
 
 def guardar_celular_nequi(nuevo_numero):
-    """Actualiza el número en la hoja 'Config'"""
     client = conectar_sheets()
     if not client: return False
-    
     try:
         sh = client.open(SHEET_NAME)
-        try:
-            wk = sh.worksheet("Config")
-        except:
-            wk = sh.add_worksheet(title="Config", rows=10, cols=2)
-            wk.update([["Clave", "Valor"], ["celular_nequi", "3000000000"]])
-        
-        # Actualizamos lógica simple: Borrar y reescribir para evitar líos de búsqueda
+        try: wk = sh.worksheet("Config")
+        except: wk = sh.add_worksheet(title="Config", rows=10, cols=2)
         wk.clear()
         wk.update([["Clave", "Valor"], ["celular_nequi", str(nuevo_numero)]])
         return True
-    except Exception as e:
-        st.error(f"Error guardando config: {e}")
-        return False
+    except: return False
 
 # --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
@@ -161,8 +143,8 @@ def cargar_inventario():
         data = wk.get_all_records()
         if not data: return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta"])
         df = pd.DataFrame(data)
-        cols_texto = ['Grado', 'Area', 'Libro']
-        for col in cols_texto:
+        cols = ['Grado', 'Area', 'Libro']
+        for col in cols: 
             if col in df.columns: df[col] = df[col].astype(str).str.strip()
         
         if 'Precio Venta' in df.columns: df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
@@ -170,9 +152,7 @@ def cargar_inventario():
         if 'Costo' in df.columns: df['Costo'] = df['Costo'].apply(limpiar_moneda)
         else: df['Costo'] = 0.0   
         return df
-    except Exception as e:
-        st.error(f"Error cargando Inventario: {e}")
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def guardar_inventario(df):
     client = conectar_sheets()
@@ -186,7 +166,7 @@ def guardar_inventario(df):
         wk.clear()
         wk.update([df.columns.values.tolist()] + df.values.tolist())
         st.cache_data.clear()
-    except Exception as e: st.error(f"Error guardando: {e}")
+    except: pass
 
 def cargar_pedidos():
     client = conectar_sheets()
@@ -224,22 +204,18 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
     writer = pd.ExcelWriter(output, engine='xlsxwriter')
     workbook = writer.book
     worksheet = workbook.add_worksheet("Listado Matriz")
-    
     fmt_header = workbook.add_format({'bold': True, 'bg_color': '#DDEBF7', 'border': 1})
     fmt_col = workbook.add_format({'bold': True, 'bg_color': '#FFF2CC', 'border': 1, 'align': 'center'})
     fmt_cell = workbook.add_format({'border': 1, 'align': 'center'})
     
     current_row = 0
     grados = df_inventario['Grado'].unique()
-
     for grado in grados:
         inv_grado = df_inventario[df_inventario['Grado'] == grado]
         if inv_grado.empty: continue
-        
-        mapa_legacy = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
+        mapa = {normalizar_clave(k): v for k, v in zip(inv_grado['Libro'], inv_grado['Area'])}
         areas = inv_grado['Area'].unique()
         patron = f"[{grado}]"
-        
         pedidos_grado = df_pedidos[df_pedidos['Detalle'].str.contains(patron, regex=False, na=False)].copy()
         if pedidos_grado.empty: continue
 
@@ -247,7 +223,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         for _, p in pedidos_grado.iterrows():
             row = {'Cliente': p['Cliente'], 'Celular': p['Celular'], 'Total': p['Total'], 'Saldo': p['Saldo']}
             for a in areas: row[a] = 0
-            
             items = str(p['Detalle']).split(" | ")
             count = 0
             for item in items:
@@ -262,21 +237,18 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
                                 break
                     if not area_enc:
                         raw = item.replace(patron, "").strip()
-                        area_enc = mapa_legacy.get(normalizar_clave(raw))
+                        area_enc = mapa.get(normalizar_clave(raw))
                     if area_enc:
                         row[area_enc] = 1
                         count += 1
             row['Cant'] = count
             data_rows.append(row)
-
         if not data_rows: continue
-        
         worksheet.write(current_row, 0, f"GRADO: {grado}", fmt_header)
         current_row += 1
         headers = ['Cliente', 'Celular', 'Total', 'Saldo'] + list(areas) + ['Cant']
         for i, h in enumerate(headers): worksheet.write(current_row, i, h, fmt_col)
         current_row += 1
-        
         for d in data_rows:
             worksheet.write(current_row, 0, d['Cliente'], fmt_cell)
             worksheet.write(current_row, 1, d['Celular'], fmt_cell)
@@ -303,15 +275,12 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 nombre = str(r['Libro']).strip()
                 area = str(r['Area']).strip()
                 precio = limpiar_moneda(r['Precio Venta'])
-                
                 label = f"{area} - {nombre} (${int(precio):,})"
                 item_new = f"[{grado}] ({area}) {nombre}"
                 item_old = f"[{grado}] {nombre}"
-                
                 checked = False
                 if seleccion_previa:
                     if item_new in seleccion_previa or item_old in seleccion_previa: checked = True
-                
                 if st.checkbox(label, key=key, value=checked):
                     seleccion.append(item_new)
                     total += precio
@@ -356,17 +325,21 @@ def renderizar_matriz_lectura(fila, inventario):
                 if area_enc: data[area_enc] = ["✅"]
             st.table(pd.DataFrame(data))
 
+    # --- CORRECCIÓN IMÁGENES ---
     st.markdown("**📂 Soportes Adjuntos:**")
     cs1, cs2 = st.columns(2)
     s1 = str(fila.get('Comprobante', 'No'))
     s2 = str(fila.get('Comprobante2', 'No'))
     
     with cs1:
-        if s1.startswith("http"): st.image(s1, width=200, caption="Soporte 1")
-        else: st.info("Sin imagen Online")
+        # Se elimina width fijo para que se adapte
+        if s1.startswith("http"): st.image(s1, caption="Soporte 1", use_container_width=True)
+        elif s1 not in ['No', 'Manual', 'Manual/Presencial', 'nan']: st.warning("Imagen no disponible")
+        else: st.info("Sin soporte inicial")
         
     with cs2:
-        if s2.startswith("http"): st.image(s2, width=200, caption="Soporte 2")
+        if s2.startswith("http"): st.image(s2, caption="Soporte 2", use_container_width=True)
+        elif s2 not in ['No', 'nan']: st.warning("Imagen no disponible")
         else: st.info("-")
     st.divider()
 
@@ -376,7 +349,6 @@ def formulario_pedido(pedido_id):
         st.error("⚠️ Error conectando a Google Sheets.")
         return
 
-    # --- CARGA CONFIG NEQUI ---
     nequi_num = obtener_celular_nequi()
     
     datos = {}
@@ -403,23 +375,24 @@ def formulario_pedido(pedido_id):
     cm.metric("Total a Pagar", f"${total:,.0f}")
     if cb.button("🔄 Actualizar Precio"): pass
     
-    # --- SECCIÓN DE PAGO CON NEQUI ---
+    # --- SECCIÓN DE PAGO CORREGIDA (UI NEQUI) ---
     st.subheader("Pagos y Soportes")
     
-    # Layout visual para Nequi
-    col_metodo, col_nequi = st.columns([1, 2])
-    
+    col_metodo, col_nequi = st.columns([1, 1])
     with col_metodo:
         tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"])
         
     with col_nequi:
+        # Recuadro Sombreado Automático (Color Inherit)
         st.markdown(f"""
-        <div style="display: flex; align-items: center; background-color: #f0f2f6; padding: 10px; border-radius: 10px;">
-            <img src="{LOGO_NEQUI_URL}" width="50" style="margin-right: 15px;">
-            <div>
-                <strong style="display: block; color: #201E43;">Cuenta Nequi:</strong>
-                <span style="font-size: 1.2em; font-family: monospace;">{nequi_num}</span>
-            </div>
+        <div style="
+            border: 1px solid rgba(128, 128, 128, 0.3);
+            border-radius: 8px;
+            padding: 15px;
+            background-color: rgba(128, 128, 128, 0.1);
+            color: inherit;">
+            <div style="font-weight: bold; margin-bottom: 5px;">📱 Cuenta Nequi:</div>
+            <div style="font-size: 1.5em; letter-spacing: 1px; font-family: monospace;">{nequi_num}</div>
         </div>
         """, unsafe_allow_html=True)
     
@@ -466,6 +439,7 @@ def formulario_pedido(pedido_id):
                 
                 error_subida = False
                 
+                # SUBIDA A IMGBB
                 if f1:
                     link1 = subir_imagen_imgbb(f1)
                     if link1.startswith("http"): n_f1 = link1
@@ -477,7 +451,7 @@ def formulario_pedido(pedido_id):
                     else: error_subida = True
                 
                 if error_subida:
-                    st.error("❌ Error subiendo imagen. Revisa tu IMGBB_KEY en Secrets.")
+                    st.error("❌ Error subiendo imagen a la nube.")
                 else:
                     hist = datos.get('Historial_Cambios', 'Original')
                     if es_modif: hist += f" | Modif: {fecha}"
@@ -571,24 +545,18 @@ def vista_exito(pid):
 
 def vista_admin():
     url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
-    
-    # --- MENÚ ACTUALIZADO CON CONFIGURACIÓN ---
     menu = st.sidebar.radio("Ir a:", ["📊 Ventas", "📦 Inventario", "⚙️ Configuración"])
     
-    # --- SECCIÓN CONFIGURACIÓN (NUEVA) ---
     if menu == "⚙️ Configuración":
         st.title("⚙️ Configuración del Sistema")
         st.info("Aquí puedes cambiar el número de Nequi que ven todos los clientes.")
-        
         actual = obtener_celular_nequi()
         nuevo = st.text_input("Número Nequi Actual:", value=actual)
-        
         if st.button("💾 Guardar Configuración"):
             if guardar_celular_nequi(nuevo):
-                st.success("¡Número actualizado exitosamente! Los clientes lo verán de inmediato.")
+                st.success("¡Número actualizado exitosamente!")
                 st.rerun()
-            else:
-                st.error("Error guardando en Google Sheets.")
+            else: st.error("Error guardando en Google Sheets.")
     
     elif menu == "📦 Inventario":
         st.title("📦 Inventario en Nube (Google Sheets)")
@@ -650,7 +618,6 @@ def vista_admin():
 
         st.divider()
         st.subheader("Listado de Pedidos")
-        
         inv_act = cargar_inventario()
         if not df.empty and not inv_act.empty:
             excel = generar_excel_matriz_bytes(df, inv_act)
@@ -701,12 +668,9 @@ def vista_admin():
                     inv_g = inv_act[inv_act['Grado'] == grado_sel]
                     areas = inv_g['Area'].unique()
                     patron = f"[{grado_sel}]"
-                    
                     df_grado = df_view[df_view['Detalle'].str.contains(patron, regex=False, na=False)].copy()
-                    
                     if not df_grado.empty:
                         for a in areas: df_grado[a] = False
-                        
                         for idx, row in df_grado.iterrows():
                             items = str(row['Detalle']).split(" | ")
                             for item in items:
@@ -717,11 +681,9 @@ def vista_admin():
                                         for a in areas:
                                             if str(a).strip().lower() == pos.lower():
                                                 df_grado.at[idx, a] = True
-                        
                         cols_ver = ["ID_Pedido", "Cliente", "Estado"] + list(areas)
                         st.dataframe(df_grado[cols_ver], hide_index=True, use_container_width=True)
-                    else:
-                        st.warning(f"No hay pedidos para {grado_sel}")
+                    else: st.warning(f"No hay pedidos para {grado_sel}")
 
         st.divider()
         st.subheader("Gestión Detallada")
@@ -738,12 +700,12 @@ def vista_admin():
             with c1:
                 st.caption("Soporte 1")
                 s1 = str(row_sel.get('Comprobante', 'No'))
-                if s1.startswith("http"): st.image(s1, width=200, caption="Soporte 1")
+                if s1.startswith("http"): st.image(s1, caption="Soporte 1", use_container_width=True)
                 else: st.info("Sin imagen Online")
             with c2:
                 st.caption("Soporte 2")
                 s2 = str(row_sel.get('Comprobante2', 'No'))
-                if s2.startswith("http"): st.image(s2, width=200, caption="Soporte 2")
+                if s2.startswith("http"): st.image(s2, caption="Soporte 2", use_container_width=True)
                 else: st.info("-")
             with c3:
                 if st.button("🗑️ ELIMINAR PEDIDO", type="primary"):
