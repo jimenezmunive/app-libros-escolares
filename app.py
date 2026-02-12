@@ -20,6 +20,7 @@ SCOPES = [
 ]
 
 SHEET_NAME = "DB_Libros_Escolares"
+LOGO_NEQUI_URL = "https://seeklogo.com/images/N/nequi-logo-58F871E5B9-seeklogo.com.png" # Logo público estable
 
 # --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
@@ -27,52 +28,40 @@ if 'exito_cliente' not in st.session_state: st.session_state.exito_cliente = Fal
 if 'ultimo_pedido_cliente' not in st.session_state: st.session_state.ultimo_pedido_cliente = None
 if 'admin_autenticado' not in st.session_state: st.session_state.admin_autenticado = False
 
-# --- FUNCIÓN: LIMPIEZA DE PRECIOS (BLINDAJE CONTRA ERRORES) ---
+# --- FUNCIÓN: LIMPIEZA DE PRECIOS ---
 def limpiar_moneda(valor):
-    """Convierte cualquier texto a numero. Si falla, devuelve 0. Evita pantalla negra."""
     try:
         if pd.isna(valor) or str(valor).strip() == "": return 0.0
         if isinstance(valor, (int, float)): return float(valor)
-        
-        # Limpiar texto
         valor_str = str(valor).strip()
         valor_str = valor_str.replace('$', '').replace(' ', '').replace(',', '')
-        
         if not valor_str: return 0.0
         return float(valor_str)
     except:
         return 0.0
 
-# --- FUNCIÓN: SUBIR IMAGEN A IMGBB (SOLUCIÓN DEFINITIVA) ---
+# --- FUNCIÓN: SUBIR IMAGEN A IMGBB ---
 def subir_imagen_imgbb(uploaded_file):
-    """Sube la imagen a la nube gratuita de ImgBB"""
     if uploaded_file is None: return "No"
-    
     try:
-        # Buscamos la llave en Secrets
         api_key = st.secrets.get("IMGBB_KEY")
         if not api_key:
-            st.error("⚠️ Falta configurar IMGBB_KEY en los Secrets de Streamlit.")
+            st.error("⚠️ Falta configurar IMGBB_KEY en los Secrets.")
             return "Error Config"
 
         url = "https://api.imgbb.com/1/upload"
         payload = {
             "key": api_key,
-            "expiration": 15552000 # La imagen dura 6 meses (opcional)
+            "expiration": 15552000 
         }
-        files = {
-            "image": uploaded_file.getvalue()
-        }
-        
+        files = {"image": uploaded_file.getvalue()}
         response = requests.post(url, data=payload, files=files)
         resultado = response.json()
         
-        if resultado["success"]:
-            return resultado["data"]["url"]
+        if resultado["success"]: return resultado["data"]["url"]
         else:
             st.error(f"Error ImgBB: {resultado.get('error', {}).get('message')}")
             return "Error Subida"
-            
     except Exception as e:
         st.error(f"Error conectando a ImgBB: {e}")
         return "Error Conexión"
@@ -89,6 +78,58 @@ def conectar_sheets():
     except Exception as e:
         st.error(f"Error conectando a Google Sheets: {e}")
         return None
+
+# --- GESTIÓN DE CONFIGURACIÓN (NEQUI) ---
+def obtener_celular_nequi():
+    """Lee el número de Nequi desde la hoja 'Config'"""
+    client = conectar_sheets()
+    if not client: return "No configurado"
+    
+    try:
+        sh = client.open(SHEET_NAME)
+        # Intentamos abrir la hoja Config, si no existe, la creamos
+        try:
+            wk = sh.worksheet("Config")
+        except:
+            wk = sh.add_worksheet(title="Config", rows=10, cols=2)
+            wk.update([["Clave", "Valor"], ["celular_nequi", "3000000000"]])
+            return "3000000000"
+        
+        # Leemos el valor
+        records = wk.get_all_records()
+        df_conf = pd.DataFrame(records)
+        
+        # Convertimos todo a string para evitar errores de tipo
+        df_conf = df_conf.astype(str)
+        
+        res = df_conf[df_conf['Clave'] == 'celular_nequi']
+        if not res.empty:
+            return res.iloc[0]['Valor']
+        else:
+            return "3000000000"
+    except Exception as e:
+        return f"Error: {e}"
+
+def guardar_celular_nequi(nuevo_numero):
+    """Actualiza el número en la hoja 'Config'"""
+    client = conectar_sheets()
+    if not client: return False
+    
+    try:
+        sh = client.open(SHEET_NAME)
+        try:
+            wk = sh.worksheet("Config")
+        except:
+            wk = sh.add_worksheet(title="Config", rows=10, cols=2)
+            wk.update([["Clave", "Valor"], ["celular_nequi", "3000000000"]])
+        
+        # Actualizamos lógica simple: Borrar y reescribir para evitar líos de búsqueda
+        wk.clear()
+        wk.update([["Clave", "Valor"], ["celular_nequi", str(nuevo_numero)]])
+        return True
+    except Exception as e:
+        st.error(f"Error guardando config: {e}")
+        return False
 
 # --- FUNCIONES AUXILIARES ---
 def normalizar_clave(texto):
@@ -118,25 +159,16 @@ def cargar_inventario():
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Inventario")
         data = wk.get_all_records()
-        
         if not data: return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta"])
         df = pd.DataFrame(data)
-        
         cols_texto = ['Grado', 'Area', 'Libro']
         for col in cols_texto:
             if col in df.columns: df[col] = df[col].astype(str).str.strip()
         
-        # BLINDAJE: Limpieza forzosa al cargar
-        if 'Precio Venta' in df.columns:
-            df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
-        else:
-            df['Precio Venta'] = 0.0
-            
-        if 'Costo' in df.columns:
-            df['Costo'] = df['Costo'].apply(limpiar_moneda)
-        else:
-            df['Costo'] = 0.0
-            
+        if 'Precio Venta' in df.columns: df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
+        else: df['Precio Venta'] = 0.0
+        if 'Costo' in df.columns: df['Costo'] = df['Costo'].apply(limpiar_moneda)
+        else: df['Costo'] = 0.0   
         return df
     except Exception as e:
         st.error(f"Error cargando Inventario: {e}")
@@ -270,8 +302,6 @@ def componente_seleccion_libros(inventario, key_suffix, seleccion_previa=None, r
                 key = f"{grado}_{r['Area']}_{r['Libro']}_{key_suffix}_{reset_counter}"
                 nombre = str(r['Libro']).strip()
                 area = str(r['Area']).strip()
-                
-                # BLINDAJE: Usamos limpiar_moneda para evitar ValueError
                 precio = limpiar_moneda(r['Precio Venta'])
                 
                 label = f"{area} - {nombre} (${int(precio):,})"
@@ -332,13 +362,11 @@ def renderizar_matriz_lectura(fila, inventario):
     s2 = str(fila.get('Comprobante2', 'No'))
     
     with cs1:
-        if s1.startswith("http"):
-            st.image(s1, width=200, caption="Soporte 1")
+        if s1.startswith("http"): st.image(s1, width=200, caption="Soporte 1")
         else: st.info("Sin imagen Online")
         
     with cs2:
-        if s2.startswith("http"):
-            st.image(s2, width=200, caption="Soporte 2")
+        if s2.startswith("http"): st.image(s2, width=200, caption="Soporte 2")
         else: st.info("-")
     st.divider()
 
@@ -348,6 +376,9 @@ def formulario_pedido(pedido_id):
         st.error("⚠️ Error conectando a Google Sheets.")
         return
 
+    # --- CARGA CONFIG NEQUI ---
+    nequi_num = obtener_celular_nequi()
+    
     datos = {}
     es_modif = False
     
@@ -372,8 +403,25 @@ def formulario_pedido(pedido_id):
     cm.metric("Total a Pagar", f"${total:,.0f}")
     if cb.button("🔄 Actualizar Precio"): pass
     
+    # --- SECCIÓN DE PAGO CON NEQUI ---
     st.subheader("Pagos y Soportes")
-    tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"], horizontal=True)
+    
+    # Layout visual para Nequi
+    col_metodo, col_nequi = st.columns([1, 2])
+    
+    with col_metodo:
+        tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"])
+        
+    with col_nequi:
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; background-color: #f0f2f6; padding: 10px; border-radius: 10px;">
+            <img src="{LOGO_NEQUI_URL}" width="50" style="margin-right: 15px;">
+            <div>
+                <strong style="display: block; color: #201E43;">Cuenta Nequi:</strong>
+                <span style="font-size: 1.2em; font-family: monospace;">{nequi_num}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     prev_abo = limpiar_moneda(datos.get('Abonado', 0))
     if es_modif: st.write(f"**Abonado Previo:** ${prev_abo:,.0f}")
@@ -418,7 +466,6 @@ def formulario_pedido(pedido_id):
                 
                 error_subida = False
                 
-                # SUBIDA A IMGBB
                 if f1:
                     link1 = subir_imagen_imgbb(f1)
                     if link1.startswith("http"): n_f1 = link1
@@ -524,9 +571,26 @@ def vista_exito(pid):
 
 def vista_admin():
     url_app = "https://app-libros-escolares-kayrovn4lncquvsdmusqd8.streamlit.app/"
-    menu = st.sidebar.radio("Ir a:", ["📊 Ventas", "📦 Inventario"])
     
-    if menu == "📦 Inventario":
+    # --- MENÚ ACTUALIZADO CON CONFIGURACIÓN ---
+    menu = st.sidebar.radio("Ir a:", ["📊 Ventas", "📦 Inventario", "⚙️ Configuración"])
+    
+    # --- SECCIÓN CONFIGURACIÓN (NUEVA) ---
+    if menu == "⚙️ Configuración":
+        st.title("⚙️ Configuración del Sistema")
+        st.info("Aquí puedes cambiar el número de Nequi que ven todos los clientes.")
+        
+        actual = obtener_celular_nequi()
+        nuevo = st.text_input("Número Nequi Actual:", value=actual)
+        
+        if st.button("💾 Guardar Configuración"):
+            if guardar_celular_nequi(nuevo):
+                st.success("¡Número actualizado exitosamente! Los clientes lo verán de inmediato.")
+                st.rerun()
+            else:
+                st.error("Error guardando en Google Sheets.")
+    
+    elif menu == "📦 Inventario":
         st.title("📦 Inventario en Nube (Google Sheets)")
         st.info("ℹ️ Para agregar o modificar libros, edita directamente tu archivo 'DB_Libros_Escolares' en Google Drive.")
         df = cargar_inventario()
@@ -596,7 +660,6 @@ def vista_admin():
         df_view = df
         if filtro: df_view = df[df['Cliente'].str.contains(filtro, case=False, na=False)]
         
-        # --- SELECTOR DE VISTA ---
         vista_modo = st.radio("Modo de Visualización:", ["Vista Lista (Edición Rápida)", "Vista Matriz (Detallada)"], horizontal=True)
         
         if vista_modo == "Vista Lista (Edición Rápida)":
@@ -629,7 +692,7 @@ def vista_admin():
                     st.success("Guardado")
                 else: st.info("Sin cambios")
         
-        else: # VISTA MATRIZ REINTEGRADA
+        else: # VISTA MATRIZ
             st.info("ℹ️ Visualización de items comprados por grado.")
             if not inv_act.empty:
                 grados_disp = inv_act['Grado'].unique()
