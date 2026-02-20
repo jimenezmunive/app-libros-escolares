@@ -412,8 +412,11 @@ def formulario_pedido(pedido_id):
     </div>
     """, unsafe_allow_html=True)
     
-    # --- NOTA WHATSAPP (REEMPLAZA LAS OPCIONES DE CARGA Y SELECCIÓN) ---
-    st.info("📲 **IMPORTANTE:** Realiza tu pago o abono a la cuenta Nequi indicada arriba y **envía el comprobante por WhatsApp** para que el administrador lo registre en tu cuenta.")
+    # --- NOTA WHATSAPP ACTUALIZADA ---
+    st.info("""**IMPORTANTE:**
+* Realiza todos tus pagos en el Nequi que se indica arriba y envía el comprobante por WhatsApp.
+* Para confirmar su pedido, se requiere de un anticipo del 50% y el saldo Contraentrega.
+* Tiempo de Entrega entre 6 días hábiles, contados a partir del pago del anticipo.""")
     
     # --- BLOQUE DEUDA UNIFICADO (SOLO LECTURA) ---
     prev_abo = limpiar_moneda(datos.get('Abonado', 0))
@@ -639,7 +642,6 @@ def vista_admin():
             st.dataframe(df_view.style.apply(resaltar_modificaciones, axis=1), use_container_width=True)
             
             st.markdown("**Editar Registros Financieros y de Estado:**")
-            # --- SE AGREGÓ LA COLUMNA 'Abonado' PARA QUE EL ADMIN LA EDITE ---
             edited = st.data_editor(
                 df_view[["ID_Pedido", "Cliente", "Estado", "Abonado", "Saldo"]],
                 column_config={
