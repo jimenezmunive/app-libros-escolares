@@ -29,7 +29,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-SHEET_NAME = "DB_Libros_Escolares"
+# 🛡️ BLINDAJE: USAMOS EL ID EXACTO DEL ARCHIVO PARA NO CONFUNDIRSE DE BASE DE DATOS
+# ID extraído de: https://docs.google.com/spreadsheets/d/12QNeHXx-It2u5xJUd9q66KrYs-829GnfTQafE16ZZEU/edit
+SHEET_ID = "12QNeHXx-It2u5xJUd9q66KrYs-829GnfTQafE16ZZEU"
 
 # --- LISTA ESTRICTA DE COLUMNAS (BLINDAJE DE ORDEN) ---
 COLUMNAS_ESTRICTAS = [
@@ -74,7 +76,8 @@ def obtener_celular_nequi():
     client = conectar_sheets()
     if not client: return "No configurado"
     try:
-        sh = client.open(SHEET_NAME)
+        # 🛡️ USAMOS open_by_key PARA ASEGURAR EL ARCHIVO CORRECTO
+        sh = client.open_by_key(SHEET_ID)
         try: wk = sh.worksheet("Config")
         except:
             wk = sh.add_worksheet(title="Config", rows=10, cols=2)
@@ -92,7 +95,7 @@ def guardar_celular_nequi(nuevo_numero):
     client = conectar_sheets()
     if not client: return False
     try:
-        sh = client.open(SHEET_NAME)
+        sh = client.open_by_key(SHEET_ID)
         try: wk = sh.worksheet("Config")
         except: wk = sh.add_worksheet(title="Config", rows=10, cols=2)
         wk.clear()
@@ -126,7 +129,7 @@ def cargar_inventario():
     client = conectar_sheets()
     if not client: return pd.DataFrame()
     try:
-        sh = client.open(SHEET_NAME)
+        sh = client.open_by_key(SHEET_ID)
         wk = sh.worksheet("Inventario")
         data = wk.get_all_records()
         if not data: return pd.DataFrame(columns=["Grado", "Area", "Libro", "Costo", "Precio Venta"])
@@ -146,7 +149,7 @@ def guardar_inventario(df):
     client = conectar_sheets()
     if not client: return
     try:
-        sh = client.open(SHEET_NAME)
+        sh = client.open_by_key(SHEET_ID)
         wk = sh.worksheet("Inventario")
         df['Costo'] = df['Costo'].apply(limpiar_moneda)
         df['Precio Venta'] = df['Precio Venta'].apply(limpiar_moneda)
@@ -161,7 +164,7 @@ def cargar_pedidos():
     if not client: return pd.DataFrame(columns=COLUMNAS_ESTRICTAS)
     
     try:
-        sh = client.open(SHEET_NAME)
+        sh = client.open_by_key(SHEET_ID)
         wk = sh.worksheet("Pedidos")
         data = wk.get_all_records()
         
@@ -169,11 +172,9 @@ def cargar_pedidos():
         
         df = pd.DataFrame(data)
         
-        # BLINDAJE 1: Asegurar que todas las columnas existan
+        # BLINDAJE: Asegurar columnas y orden
         for col in COLUMNAS_ESTRICTAS:
             if col not in df.columns: df[col] = ""
-                
-        # BLINDAJE 2: Forzar el orden estricto
         df = df[COLUMNAS_ESTRICTAS]
         
         if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
@@ -185,12 +186,12 @@ def guardar_pedido_db(df):
     client = conectar_sheets()
     if not client: return
     try:
-        # BLINDAJE 3: Forzar orden estricto antes de guardar en Excel
+        # Forzar orden estricto antes de guardar
         for col in COLUMNAS_ESTRICTAS:
             if col not in df.columns: df[col] = ""
         df = df[COLUMNAS_ESTRICTAS]
         
-        sh = client.open(SHEET_NAME)
+        sh = client.open_by_key(SHEET_ID)
         wk = sh.worksheet("Pedidos")
         df = df.astype(str)
         wk.clear()
@@ -693,7 +694,6 @@ def vista_admin():
                     areas = inv_g['Area'].unique()
                     patron = f"[{grado_sel}]"
                     df_grado = df_view[df_view['Detalle'].str.contains(patron, regex=False, na=False)].copy()
-                    
                     if not df_grado.empty:
                         for a in areas: df_grado[a] = False
                         for idx, row in df_grado.iterrows():
@@ -707,7 +707,6 @@ def vista_admin():
                                             if str(a).strip().lower() == pos.lower():
                                                 df_grado.at[idx, a] = True
                         
-                        # --- VISTA MATRIZ EN PANTALLA ACTUALIZADA CON FECHAS ---
                         cols_ver = ["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Estado"] + list(areas)
                         st.dataframe(df_grado[cols_ver], hide_index=True, use_container_width=True)
                     else: st.warning(f"No hay pedidos para {grado_sel}")
