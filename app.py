@@ -134,14 +134,15 @@ def limpiar_numero(num):
 def obtener_nuevo_id(df_pedidos):
     max_id = 0
     if not df_pedidos.empty:
-        for pid in df_pedidos['ID_Pedido']:
-            pid_clean = re.sub(r'\D', '', str(pid))
-            if pid_clean.isdigit():
-                val = int(pid_clean)
-                if val > max_id: max_id = val
+        if 'ID_Pedido' in df_pedidos.columns:
+            for pid in df_pedidos['ID_Pedido']:
+                pid_clean = re.sub(r'\D', '', str(pid))
+                if pid_clean.isdigit():
+                    val = int(pid_clean)
+                    if val > max_id: max_id = val
     return f"{max_id + 1:04d}"
 
-# --- CRUD DATOS ---
+# --- CRUD DATOS (CORREGIDO PARA EVITAR KEYERROR) ---
 def cargar_inventario():
     client = conectar_sheets()
     if not client: return pd.DataFrame()
@@ -177,20 +178,37 @@ def guardar_inventario(df):
     except: pass
 
 def cargar_pedidos():
+    # Definimos las columnas obligatorias
+    COLUMNAS_OBLIGATORIAS = [
+        "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", 
+        "Celular", "Detalle", "Total", "Abonado", "Saldo", "Estado", 
+        "Comprobante", "Comprobante2", "Historial_Cambios"
+    ]
+    
     client = conectar_sheets()
-    if not client: return pd.DataFrame()
+    if not client: return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
+    
     try:
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Pedidos")
         data = wk.get_all_records()
-        if not data: return pd.DataFrame(columns=["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Celular", "Detalle", "Total", "Abonado", "Saldo", "Estado", "Comprobante", "Comprobante2"])
+        
+        if not data: 
+            return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
+            
         df = pd.DataFrame(data)
+        
+        # BLINDAJE: Si faltan columnas (por error en Excel), las creamos vacías
+        for col in COLUMNAS_OBLIGATORIAS:
+            if col not in df.columns:
+                df[col] = ""
+                
+        # Aseguramos tipos de datos
         if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
-        if "Comprobante2" not in df.columns: df["Comprobante2"] = "No"
-        if "Fecha_Creacion" not in df.columns: df["Fecha_Creacion"] = ""
-        if "Ultima_Modificacion" not in df.columns: df["Ultima_Modificacion"] = ""
         return df
-    except: return pd.DataFrame()
+    except Exception as e: 
+        # Si falla algo grave, retornamos estructura vacía para no romper la app
+        return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
 
 def guardar_pedido_db(df):
     client = conectar_sheets()
@@ -412,7 +430,7 @@ def formulario_pedido(pedido_id):
     </div>
     """, unsafe_allow_html=True)
     
-    # --- NOTA WHATSAPP ACTUALIZADA ---
+    # --- NOTA WHATSAPP ---
     st.info("""**IMPORTANTE:**
 * Realiza todos tus pagos en el Nequi que se indica arriba y envía el comprobante por WhatsApp.
 * Para confirmar su pedido, se requiere de un anticipo del 50% y el saldo Contraentrega.
@@ -529,10 +547,19 @@ def vista_cliente(pid_param=None):
 def vista_exito(pid):
     st.balloons()
     st.success("¡Pedido Guardado en la Nube Exitosamente!")
+    
+    # --- BLINDAJE EXTRA: RECARGA SEGURA ---
     df = cargar_pedidos()
-    inv = cargar_inventario()
-    row = df[df['ID_Pedido'] == str(pid)]
-    if not row.empty: renderizar_matriz_lectura(row.iloc[0], inv)
+    if not df.empty and 'ID_Pedido' in df.columns:
+        row = df[df['ID_Pedido'] == str(pid)]
+        if not row.empty: 
+            inv = cargar_inventario()
+            renderizar_matriz_lectura(row.iloc[0], inv)
+        else:
+            st.warning("El pedido se guardó, pero no pude cargarlo inmediatamente. Verifica en el menú 'Revisar Pedido'.")
+    else:
+        st.warning("El pedido se guardó. Por favor revisa en el menú principal.")
+
     st.divider()
     if st.button("⬅️ Inicio"):
         st.session_state.exito_cliente = False
