@@ -13,6 +13,16 @@ from datetime import datetime
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Pedido de Ayuda Escolar", layout="wide", page_icon="📚")
 
+# --- MODO PRIVADO (OCULTAR MENÚS Y MARCAS DE AGUA) ---
+hide_menu_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+st.markdown(hide_menu_style, unsafe_allow_html=True)
+
 # --- CONFIGURACIÓN GOOGLE SHEETS ---
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -177,7 +187,6 @@ def cargar_pedidos():
         df = pd.DataFrame(data)
         if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
         if "Comprobante2" not in df.columns: df["Comprobante2"] = "No"
-        # Asegurar columnas de fecha
         if "Fecha_Creacion" not in df.columns: df["Fecha_Creacion"] = ""
         if "Ultima_Modificacion" not in df.columns: df["Ultima_Modificacion"] = ""
         return df
@@ -256,7 +265,6 @@ def generar_excel_matriz_bytes(df_pedidos, df_inventario):
         worksheet.write(current_row, 0, f"GRADO: {grado}", fmt_header)
         current_row += 1
         
-        # HEADERS ACTUALIZADOS CON FECHAS
         headers = ['Cliente', 'Fecha Creación', 'Últ. Modif', 'Celular', 'Total', 'Saldo'] + list(areas) + ['Cant']
         for i, h in enumerate(headers): worksheet.write(current_row, i, h, fmt_col)
         current_row += 1
@@ -338,7 +346,6 @@ def renderizar_matriz_lectura(fila, inventario):
                 if area_enc: data[area_enc] = ["✅"]
             st.table(pd.DataFrame(data))
 
-    # --- CORRECCIÓN IMÁGENES ---
     st.markdown("**📂 Soportes Adjuntos:**")
     cs1, cs2 = st.columns(2)
     s1 = str(fila.get('Comprobante', 'No'))
@@ -387,10 +394,9 @@ def formulario_pedido(pedido_id):
     cm.metric("Total a Pagar", f"${total:,.0f}")
     if cb.button("🔄 Actualizar Precio"): pass
     
-    # --- SECCIÓN DE PAGO (NEQUI MOVIDO ARRIBA) ---
     st.subheader("Pagos y Soportes")
     
-    # Recuadro Nequi Pequeño y Sutil
+    # --- RECUADRO NEQUI COMPACTO ---
     st.markdown(f"""
     <div style="
         border: 1px solid rgba(128, 128, 128, 0.3);
@@ -406,46 +412,27 @@ def formulario_pedido(pedido_id):
     </div>
     """, unsafe_allow_html=True)
     
-    tipo = st.radio("Método:", ["Pago Total", "Abono Parcial"])
+    # --- NOTA WHATSAPP (REEMPLAZA LAS OPCIONES DE CARGA Y SELECCIÓN) ---
+    st.info("📲 **IMPORTANTE:** Realiza tu pago o abono a la cuenta Nequi indicada arriba y **envía el comprobante por WhatsApp** para que el administrador lo registre en tu cuenta.")
     
-    # --- BLOQUE DEUDA UNIFICADO ---
+    # --- BLOQUE DEUDA UNIFICADO (SOLO LECTURA) ---
     prev_abo = limpiar_moneda(datos.get('Abonado', 0))
     saldo_pend = total - prev_abo
     if es_modif:
         st.markdown(f"""
-        <div style="margin-top: 10px; margin-bottom: 15px; line-height: 1.4;">
+        <div style="margin-top: 10px; margin-bottom: 15px; line-height: 1.2;">
             <div><strong>Abono Previo:</strong> ${prev_abo:,.0f}</div>
             <div style="color: #d9534f;"><strong>Saldo Deuda:</strong> ${saldo_pend:,.0f}</div>
         </div>
         """, unsafe_allow_html=True)
     
-    new_abo = st.number_input("Valor a transferir HOY:", min_value=0.0, step=1000.0)
-    st.caption("ℹ️ Nota: El valor será validado administrativamente.")
-    
-    f1, f2 = None, None
-    if es_modif:
-        st.markdown("**📂 Soporte 1 (Solo Lectura):**")
-        s1 = str(datos.get('Comprobante', 'No'))
-        if s1.startswith("http"): st.image(s1, width=200)
-        else: st.info("No hay soporte inicial Online")
-        
-        st.markdown("**📂 Cargar Soporte 2 (Si abona hoy):**")
-        f2 = st.file_uploader("Subir 2do Comprobante", type=['jpg','png','jpeg','pdf'])
-    else:
-        st.markdown("**📂 Cargar Soporte de Pago:**")
-        f1 = st.file_uploader("Subir Comprobante", type=['jpg','png','jpeg','pdf'])
-    
     st.write("---")
     if st.button("✅ CONFIRMAR Y GUARDAR"):
-        with st.spinner("Subiendo Imagen y Guardando..."):
-            acumulado = prev_abo + new_abo
+        with st.spinner("Guardando Pedido..."):
+            acumulado = prev_abo # El cliente ya no suma abonos desde aquí
             
             if not nom or not cel: st.error("Faltan datos personales")
             elif total == 0: st.error("Seleccione libros")
-            elif (not es_modif) and (new_abo == 0): st.error("Ingrese abono")
-            elif (not es_modif) and (not f1): st.error("Falta comprobante")
-            elif tipo == "Pago Total" and acumulado < total:
-                st.error(f"Pago Total requiere ${total:,.0f}. Llevas ${acumulado:,.0f}")
             else:
                 df_ped = cargar_pedidos()
                 fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -454,46 +441,32 @@ def formulario_pedido(pedido_id):
                 if es_modif: curr_id = str(pedido_id)
                 else: curr_id = obtener_nuevo_id(df_ped)
                 
+                # Se mantienen los comprobantes que ya tuviera registrados previamente
                 n_f1 = datos.get('Comprobante', 'No')
                 n_f2 = datos.get('Comprobante2', 'No')
                 
-                error_subida = False
-                
-                if f1:
-                    link1 = subir_imagen_imgbb(f1)
-                    if link1.startswith("http"): n_f1 = link1
-                    else: error_subida = True
-                
-                if f2:
-                    link2 = subir_imagen_imgbb(f2)
-                    if link2.startswith("http"): n_f2 = link2
-                    else: error_subida = True
-                
-                if error_subida:
-                    st.error("❌ Error subiendo imagen a la nube.")
-                else:
-                    hist = datos.get('Historial_Cambios', 'Original')
-                    if es_modif: hist += f" | Modif: {fecha}"
+                hist = datos.get('Historial_Cambios', 'Original')
+                if es_modif: hist += f" | Modif: {fecha}"
 
-                    nuevo_registro = {
-                        "ID_Pedido": curr_id, "Fecha_Creacion": fecha if not es_modif else datos['Fecha_Creacion'],
-                        "Ultima_Modificacion": fecha, "Cliente": nom, "Celular": cel,
-                        "Detalle": " | ".join(items), "Total": total, "Abonado": acumulado,
-                        "Saldo": saldo, "Estado": datos.get('Estado', 'Nuevo'),
-                        "Comprobante": n_f1, "Comprobante2": n_f2, "Historial_Cambios": hist
-                    }
-                    
-                    if es_modif:
-                        idx = df_ped[df_ped['ID_Pedido'] == curr_id].index
-                        if not idx.empty:
-                            for k, v in nuevo_registro.items(): df_ped.at[idx[0], k] = v
-                    else:
-                        df_ped = pd.concat([df_ped, pd.DataFrame([nuevo_registro])], ignore_index=True)
-                    
-                    guardar_pedido_db(df_ped)
-                    st.session_state.exito_cliente = True
-                    st.session_state.ultimo_pedido_cliente = curr_id
-                    st.rerun()
+                nuevo_registro = {
+                    "ID_Pedido": curr_id, "Fecha_Creacion": fecha if not es_modif else datos['Fecha_Creacion'],
+                    "Ultima_Modificacion": fecha, "Cliente": nom, "Celular": cel,
+                    "Detalle": " | ".join(items), "Total": total, "Abonado": acumulado,
+                    "Saldo": saldo, "Estado": datos.get('Estado', 'Nuevo'),
+                    "Comprobante": n_f1, "Comprobante2": n_f2, "Historial_Cambios": hist
+                }
+                
+                if es_modif:
+                    idx = df_ped[df_ped['ID_Pedido'] == curr_id].index
+                    if not idx.empty:
+                        for k, v in nuevo_registro.items(): df_ped.at[idx[0], k] = v
+                else:
+                    df_ped = pd.concat([df_ped, pd.DataFrame([nuevo_registro])], ignore_index=True)
+                
+                guardar_pedido_db(df_ped)
+                st.session_state.exito_cliente = True
+                st.session_state.ultimo_pedido_cliente = curr_id
+                st.rerun()
 
 def vista_cliente(pid_param=None):
     if pid_param:
@@ -649,61 +622,70 @@ def vista_admin():
         vista_modo = st.radio("Modo de Visualización:", ["Vista Lista (Edición Rápida)", "Vista Matriz (Detallada)"], horizontal=True)
         
         if vista_modo == "Vista Lista (Edición Rápida)":
-            # --- REORDENAR COLUMNAS ---
-            cols_base = ["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Estado", "Total", "Saldo", "Celular"]
+            cols_base = ["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Estado", "Total", "Abonado", "Saldo", "Celular"]
             cols_extra = [c for c in df_view.columns if c not in cols_base]
             df_view = df_view[cols_base + cols_extra]
             
-            # --- FUNCIÓN DE ESTILO PARA MODIFICACIONES ---
             def resaltar_modificaciones(row):
                 estilo = [''] * len(row)
                 try:
-                    # Si ultima modif es mayor (alfabéticamente la fecha ISO funciona) a creación
                     if row['Ultima_Modificacion'] > row['Fecha_Creacion']:
-                        # Buscamos índice de la columna Ultima_Modificacion
                         idx = row.index.get_loc('Ultima_Modificacion')
-                        estilo[idx] = 'background-color: #ffcccc; color: #8b0000; font-weight: bold;'
+                        estilo[idx] = 'color: #d9534f; font-weight: bold;'
                 except: pass
                 return estilo
 
-            # Aplicamos estilo (Esto vuelve el dataframe de solo lectura visualmente)
-            st.caption("💡 Filas con 'Última Modificación' resaltada en rojo han sido editadas.")
-            
-            # Streamlit Data Editor no soporta conditional formatting celda a celda nativo fácilmente
-            # Usamos dataframe estilizado para VISUALIZAR alertas
+            st.caption("💡 Fechas en rojo indican modificaciones posteriores. **Nota:** Puedes editar el 'Estado', 'Abonado' y 'Saldo' en la tabla de abajo.")
             st.dataframe(df_view.style.apply(resaltar_modificaciones, axis=1), use_container_width=True)
             
-            st.markdown("**Editar Estados:**")
-            # Editor simplificado solo para editar estados rápidamente sin conflictos visuales
+            st.markdown("**Editar Registros Financieros y de Estado:**")
+            # --- SE AGREGÓ LA COLUMNA 'Abonado' PARA QUE EL ADMIN LA EDITE ---
             edited = st.data_editor(
-                df_view[["ID_Pedido", "Cliente", "Estado", "Saldo"]],
+                df_view[["ID_Pedido", "Cliente", "Estado", "Abonado", "Saldo"]],
                 column_config={
                     "Estado": st.column_config.SelectboxColumn(options=["Nuevo", "Pagado", "En Impresión", "Entregado", "Anulado"]),
                     "ID_Pedido": st.column_config.TextColumn(disabled=True),
+                    "Cliente": st.column_config.TextColumn(disabled=True),
                 },
                 hide_index=True, use_container_width=True, key="editor_rapido"
             )
             
-            if st.button("💾 Guardar Cambios Estados"):
+            if st.button("💾 Guardar Cambios"):
                 cambios = False
+                fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 for idx, row in edited.iterrows():
                     mask = df['ID_Pedido'] == row['ID_Pedido']
                     if mask.any():
-                        if df.loc[mask, 'Estado'].values[0] != row['Estado']:
+                        fila_original = df.loc[mask].iloc[0]
+                        hubo_cambio_fila = False
+                        
+                        if fila_original['Estado'] != row['Estado']:
                             df.loc[mask, 'Estado'] = row['Estado']
-                            cambios = True
-                        # Saldo también editable por si acaso
-                        saldo_original = limpiar_moneda(df.loc[mask, 'Saldo'].values[0])
+                            hubo_cambio_fila = True
+                            
+                        abo_original = limpiar_moneda(fila_original['Abonado'])
+                        abo_nuevo = limpiar_moneda(row['Abonado'])
+                        if abo_original != abo_nuevo:
+                            df.loc[mask, 'Abonado'] = row['Abonado']
+                            hubo_cambio_fila = True
+                            
+                        saldo_original = limpiar_moneda(fila_original['Saldo'])
                         saldo_nuevo = limpiar_moneda(row['Saldo'])
                         if saldo_original != saldo_nuevo:
                              df.loc[mask, 'Saldo'] = row['Saldo']
-                             cambios = True
+                             hubo_cambio_fila = True
+                             
+                        if hubo_cambio_fila:
+                            df.loc[mask, 'Ultima_Modificacion'] = fecha_actual
+                            cambios = True
+
                 if cambios:
                     guardar_pedido_db(df)
-                    st.success("Guardado")
-                else: st.info("Sin cambios")
+                    st.success("¡Registros guardados con éxito!")
+                    st.rerun()
+                else: st.info("No detecté cambios.")
         
-        else: # VISTA MATRIZ
+        else:
             st.info("ℹ️ Visualización de items comprados por grado.")
             if not inv_act.empty:
                 grados_disp = inv_act['Grado'].unique()
@@ -735,7 +717,6 @@ def vista_admin():
         bf = st.text_input("Filtrar Gestión:", placeholder="ID o Nombre...")
         if bf: opts = opts[opts.str.contains(bf, case=False, na=False)]
         
-        # --- DROPDOWN CON OPCIÓN VACÍA POR DEFECTO ---
         lista_clientes = ["-Selección del cliente-"] + list(opts)
         sel_g = st.selectbox("Seleccionar:", lista_clientes)
         
@@ -780,5 +761,4 @@ else:
                     st.rerun()
                 else: st.error("Incorrecto")
     else:
-        # BOTÓN SALIR ELIMINADO SEGÚN REQUERIMIENTO
         vista_admin()
