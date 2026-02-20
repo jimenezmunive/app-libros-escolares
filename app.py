@@ -31,6 +31,13 @@ SCOPES = [
 
 SHEET_NAME = "DB_Libros_Escolares"
 
+# --- LISTA ESTRICTA DE COLUMNAS (BLINDAJE DE ORDEN) ---
+COLUMNAS_ESTRICTAS = [
+    "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", 
+    "Celular", "Detalle", "Total", "Abonado", "Saldo", "Estado", 
+    "Comprobante", "Comprobante2", "Historial_Cambios"
+]
+
 # --- ESTADO ---
 if 'reset_manual' not in st.session_state: st.session_state.reset_manual = 0
 if 'exito_cliente' not in st.session_state: st.session_state.exito_cliente = False
@@ -48,34 +55,6 @@ def limpiar_moneda(valor):
         return float(valor_str)
     except:
         return 0.0
-
-# --- FUNCIÓN: SUBIR IMAGEN A IMGBB ---
-def subir_imagen_imgbb(uploaded_file):
-    if uploaded_file is None: return "No"
-    try:
-        api_key = st.secrets.get("IMGBB_KEY")
-        if not api_key:
-            st.error("⚠️ Falta configurar IMGBB_KEY en los Secrets.")
-            return "Error Config"
-
-        url = "https://api.imgbb.com/1/upload"
-        payload = {
-            "key": api_key,
-            "expiration": 15552000 # 6 meses
-        }
-        files = {"image": (uploaded_file.name, uploaded_file.getvalue())}
-        
-        response = requests.post(url, data=payload, files=files)
-        resultado = response.json()
-        
-        if resultado["success"]:
-            return resultado["data"]["url"] 
-        else:
-            st.error(f"Error ImgBB: {resultado.get('error', {}).get('message')}")
-            return "Error Subida"
-    except Exception as e:
-        st.error(f"Error conectando a ImgBB: {e}")
-        return "Error Conexión"
 
 # --- CONEXIÓN GOOGLE SHEETS ---
 @st.cache_resource
@@ -142,7 +121,7 @@ def obtener_nuevo_id(df_pedidos):
                     if val > max_id: max_id = val
     return f"{max_id + 1:04d}"
 
-# --- CRUD DATOS (CORREGIDO PARA EVITAR KEYERROR) ---
+# --- CRUD DATOS ---
 def cargar_inventario():
     client = conectar_sheets()
     if not client: return pd.DataFrame()
@@ -178,42 +157,39 @@ def guardar_inventario(df):
     except: pass
 
 def cargar_pedidos():
-    # Definimos las columnas obligatorias
-    COLUMNAS_OBLIGATORIAS = [
-        "ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", 
-        "Celular", "Detalle", "Total", "Abonado", "Saldo", "Estado", 
-        "Comprobante", "Comprobante2", "Historial_Cambios"
-    ]
-    
     client = conectar_sheets()
-    if not client: return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
+    if not client: return pd.DataFrame(columns=COLUMNAS_ESTRICTAS)
     
     try:
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Pedidos")
         data = wk.get_all_records()
         
-        if not data: 
-            return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
-            
+        if not data: return pd.DataFrame(columns=COLUMNAS_ESTRICTAS)
+        
         df = pd.DataFrame(data)
         
-        # BLINDAJE: Si faltan columnas (por error en Excel), las creamos vacías
-        for col in COLUMNAS_OBLIGATORIAS:
-            if col not in df.columns:
-                df[col] = ""
+        # BLINDAJE 1: Asegurar que todas las columnas existan
+        for col in COLUMNAS_ESTRICTAS:
+            if col not in df.columns: df[col] = ""
                 
-        # Aseguramos tipos de datos
+        # BLINDAJE 2: Forzar el orden estricto
+        df = df[COLUMNAS_ESTRICTAS]
+        
         if 'ID_Pedido' in df.columns: df['ID_Pedido'] = df['ID_Pedido'].astype(str)
         return df
-    except Exception as e: 
-        # Si falla algo grave, retornamos estructura vacía para no romper la app
-        return pd.DataFrame(columns=COLUMNAS_OBLIGATORIAS)
+    except: 
+        return pd.DataFrame(columns=COLUMNAS_ESTRICTAS)
 
 def guardar_pedido_db(df):
     client = conectar_sheets()
     if not client: return
     try:
+        # BLINDAJE 3: Forzar orden estricto antes de guardar en Excel
+        for col in COLUMNAS_ESTRICTAS:
+            if col not in df.columns: df[col] = ""
+        df = df[COLUMNAS_ESTRICTAS]
+        
         sh = client.open(SHEET_NAME)
         wk = sh.worksheet("Pedidos")
         df = df.astype(str)
@@ -450,7 +426,7 @@ def formulario_pedido(pedido_id):
     st.write("---")
     if st.button("✅ CONFIRMAR Y GUARDAR"):
         with st.spinner("Guardando Pedido..."):
-            acumulado = prev_abo # El cliente ya no suma abonos desde aquí
+            acumulado = prev_abo
             
             if not nom or not cel: st.error("Faltan datos personales")
             elif total == 0: st.error("Seleccione libros")
@@ -462,7 +438,6 @@ def formulario_pedido(pedido_id):
                 if es_modif: curr_id = str(pedido_id)
                 else: curr_id = obtener_nuevo_id(df_ped)
                 
-                # Se mantienen los comprobantes que ya tuviera registrados previamente
                 n_f1 = datos.get('Comprobante', 'No')
                 n_f2 = datos.get('Comprobante2', 'No')
                 
@@ -548,18 +523,12 @@ def vista_exito(pid):
     st.balloons()
     st.success("¡Pedido Guardado en la Nube Exitosamente!")
     
-    # --- BLINDAJE EXTRA: RECARGA SEGURA ---
     df = cargar_pedidos()
     if not df.empty and 'ID_Pedido' in df.columns:
         row = df[df['ID_Pedido'] == str(pid)]
         if not row.empty: 
             inv = cargar_inventario()
             renderizar_matriz_lectura(row.iloc[0], inv)
-        else:
-            st.warning("El pedido se guardó, pero no pude cargarlo inmediatamente. Verifica en el menú 'Revisar Pedido'.")
-    else:
-        st.warning("El pedido se guardó. Por favor revisa en el menú principal.")
-
     st.divider()
     if st.button("⬅️ Inicio"):
         st.session_state.exito_cliente = False
@@ -724,6 +693,7 @@ def vista_admin():
                     areas = inv_g['Area'].unique()
                     patron = f"[{grado_sel}]"
                     df_grado = df_view[df_view['Detalle'].str.contains(patron, regex=False, na=False)].copy()
+                    
                     if not df_grado.empty:
                         for a in areas: df_grado[a] = False
                         for idx, row in df_grado.iterrows():
@@ -736,7 +706,9 @@ def vista_admin():
                                         for a in areas:
                                             if str(a).strip().lower() == pos.lower():
                                                 df_grado.at[idx, a] = True
-                        cols_ver = ["ID_Pedido", "Cliente", "Estado"] + list(areas)
+                        
+                        # --- VISTA MATRIZ EN PANTALLA ACTUALIZADA CON FECHAS ---
+                        cols_ver = ["ID_Pedido", "Fecha_Creacion", "Ultima_Modificacion", "Cliente", "Estado"] + list(areas)
                         st.dataframe(df_grado[cols_ver], hide_index=True, use_container_width=True)
                     else: st.warning(f"No hay pedidos para {grado_sel}")
 
